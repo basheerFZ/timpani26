@@ -16,6 +16,7 @@ int main(int argc, char *argv[])
 
     // 구조체 명시적 초기화
     memset(&ctx, 0, sizeof(ctx));
+    LIST_INIT(&ctx.runtime.workloads);
 
     // 설정 파싱
     ret = parse_config(argc, argv, &ctx);
@@ -80,21 +81,33 @@ static tt_error_t initialize(struct context *ctx)
     }
 
     if (!ctx->config.enable_apex) {
-        if (strcmp(ctx->hp_manager.workload_id, "Apex.OS") == 0) {
-            if (init_apex_list(ctx) != TT_SUCCESS) {
-                TT_LOG_ERROR("Failed to initialize Apex.OS task list");
-                return TT_ERROR_CONFIG;
-            }
-        } else {
-            // BPF 활성화
-            bpf_on(handle_sigwait_bpf_event, handle_schedstat_bpf_event, (void *)ctx);
+        // BPF 활성화 (PID-based, workload-agnostic)
+        bpf_on(handle_sigwait_bpf_event, handle_schedstat_bpf_event, (void *)ctx);
 
-            // 태스크 리스트 초기화
-            if (init_task_list(ctx) != TT_SUCCESS) {
-                TT_LOG_ERROR("Failed to initialize time trigger list");
-                return TT_ERROR_CONFIG;
+        // 각 워크로드의 태스크 리스트 초기화
+        struct workload *wl;
+        bool has_apex_workload = false;
+        int total_tasks = 0;
+
+        LIST_FOREACH(wl, &ctx->runtime.workloads, entry) {
+            if (strcmp(wl->sched_info.workload_id, "Apex.OS") == 0) {
+                has_apex_workload = true;
+                if (init_apex_list(ctx) != TT_SUCCESS) {
+                    TT_LOG_ERROR("Failed to initialize Apex.OS task list");
+                    return TT_ERROR_CONFIG;
+                }
+            } else {
+                if (init_task_list(wl) != TT_SUCCESS) {
+                    TT_LOG_ERROR("Failed to initialize task list for workload %s",
+                        wl->sched_info.workload_id);
+                    return TT_ERROR_CONFIG;
+                }
+                total_tasks += wl->nr_active_tasks;
             }
         }
+
+        TT_LOG_INFO("Initialized %u workload(s) with %d total active tasks",
+            ctx->runtime.nr_workloads, total_tasks);
     }
 
     // Initialize Apex.OS Monitor
@@ -120,10 +133,14 @@ static tt_error_t run(struct context *ctx)
         return TT_ERROR_TIMER;
     }
 
-    // 하이퍼피리어드 타이머 시작
-    if (start_hyperperiod_timer(ctx) != TT_SUCCESS) {
-        TT_LOG_ERROR("Failed to start hyperperiod timer");
-        return TT_ERROR_TIMER;
+    // 각 워크로드의 하이퍼피리어드 타이머 시작
+    struct workload *wl;
+    LIST_FOREACH(wl, &ctx->runtime.workloads, entry) {
+        if (start_hyperperiod_timer(wl) != TT_SUCCESS) {
+            TT_LOG_ERROR("Failed to start hyperperiod timer for workload %s",
+                wl->sched_info.workload_id);
+            return TT_ERROR_TIMER;
+        }
     }
 
     // 메인 이벤트 루프

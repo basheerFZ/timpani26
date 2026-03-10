@@ -37,7 +37,7 @@ static void cleanup_trpc_connection(sd_bus **dbus, sd_event **event)
     }
 }
 
-static int get_sched_info(struct context *ctx, struct sched_info *sinfo)
+static int get_workloads(struct context *ctx)
 {
     int ret;
     void *buf = NULL;
@@ -60,14 +60,14 @@ static int get_sched_info(struct context *ctx, struct sched_info *sinfo)
     }
     buf = NULL;  // now use sbuf->data
 
-    ret = deserialize_sched_info(ctx, sbuf, sinfo);
+    ret = deserialize_workloads(ctx, sbuf);
 
     free_serial_buf(sbuf);
 
     return ret;
 }
 
-tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struct sched_info *sinfo)
+tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struct sched_info *sinfo, struct hyperperiod_manager *hp_mgr)
 {
     uint32_t i;
     uint64_t hyperperiod_us = 0;
@@ -123,12 +123,60 @@ tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struc
     TT_LOG_INFO("Workload: %s", sinfo->workload_id);
     TT_LOG_INFO("Hyperperiod: %lu us", hyperperiod_us);
 
-    // context의 hp_manager에 초기화 (수정된 부분)
-    if (init_hyperperiod(ctx, sinfo->workload_id, hyperperiod_us, &ctx->hp_manager) != TT_SUCCESS) {
+    // 워크로드의 hp_manager에 초기화
+    if (init_hyperperiod(ctx, sinfo->workload_id, hyperperiod_us, hp_mgr) != TT_SUCCESS) {
         TT_LOG_ERROR("Failed to initialize hyperperiod manager");
         destroy_task_info_list(sinfo->tasks);
         sinfo->tasks = NULL;
         return TT_ERROR_CONFIG;
+    }
+
+    return TT_SUCCESS;
+}
+
+tt_error_t deserialize_workloads(struct context *ctx, serial_buf_t *sbuf)
+{
+    uint32_t nr_workloads = 0;
+    uint32_t i;
+
+    // Deserialize number of workloads
+    if (deserialize_int32_t(sbuf, &nr_workloads) < 0) {
+        TT_LOG_ERROR("Failed to deserialize nr_workloads");
+        return TT_ERROR_NETWORK;
+    }
+
+    if (nr_workloads == 0) {
+        TT_LOG_ERROR("No workloads received from server");
+        return TT_ERROR_CONFIG;
+    }
+
+    TT_LOG_INFO("Received %u workload(s) from server", nr_workloads);
+
+    for (i = 0; i < nr_workloads; i++) {
+        struct workload *wl = calloc(1, sizeof(struct workload));
+        if (!wl) {
+            TT_LOG_ERROR("Failed to allocate memory for workload");
+            return TT_ERROR_MEMORY;
+        }
+
+        LIST_INIT(&wl->tt_list);
+        wl->ctx = ctx;
+        wl->nr_active_tasks = 0;
+
+        // Deserialize this workload's sched_info and hyperperiod
+        tt_error_t ret = deserialize_sched_info(ctx, sbuf, &wl->sched_info, &wl->hp_manager);
+        if (ret != TT_SUCCESS) {
+            TT_LOG_ERROR("Failed to deserialize workload %u", i);
+            free(wl);
+            return ret;
+        }
+
+        LIST_INSERT_HEAD(&ctx->runtime.workloads, wl, entry);
+        ctx->runtime.nr_workloads++;
+
+        TT_LOG_INFO("Workload [%u/%u]: %s (hyperperiod: %lu us, tasks: %u)",
+            i + 1, nr_workloads, wl->sched_info.workload_id,
+            wl->hp_manager.hyperperiod_us, wl->sched_info.nr_tasks);
     }
 
     return TT_SUCCESS;
@@ -174,7 +222,7 @@ tt_error_t init_trpc(struct context *ctx)
 		return TT_SUCCESS;
 	    }
 
-            if (get_sched_info(ctx, &ctx->runtime.sched_info) == 0) {
+            if (get_workloads(ctx) == 0) {
                 /* Successfully retrieved schedule info */
                 TT_LOG_INFO("Successfully connected and retrieved schedule info (attempt %d)", retry_count + 1);
                 return TT_SUCCESS;

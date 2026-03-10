@@ -255,6 +255,9 @@ static inline void tt_timespec_add_us(struct timespec *ts, uint64_t us)
 // Forward declaration
 struct context;
 
+// Forward declaration
+struct workload;
+
 // Time trigger 구조체
 struct time_trigger {
     timer_t timer;
@@ -265,7 +268,8 @@ struct time_trigger {
     uint8_t sigwait_enter;
 #endif
     struct timespec prev_timer;
-    struct context *ctx;  // context 포인터 추가
+    struct context *ctx;      // context 포인터
+    struct workload *workload; // 소속 워크로드 포인터
     LIST_ENTRY(time_trigger) entry;
 };
 
@@ -296,6 +300,20 @@ struct hyperperiod_manager {
 } __attribute__((packed, aligned(8)));
 
 LIST_HEAD(listhead, time_trigger);
+
+// ===== 워크로드 구조체 =====
+// 멀티 워크로드 지원을 위한 워크로드 단위 관리 구조체
+// 각 워크로드는 자체 sched_info, hyperperiod_manager, task list를 보유
+struct workload {
+    struct sched_info sched_info;           // 워크로드별 스케줄링 정보 (태스크 연결 리스트)
+    struct hyperperiod_manager hp_manager;  // 워크로드별 하이퍼피리어드 타이머 및 통계
+    struct listhead tt_list;               // 워크로드별 time_trigger 리스트
+    int nr_active_tasks;                   // 성공적으로 초기화된 태스크 수
+    struct context *ctx;                   // 컨텍스트 역참조 포인터
+    LIST_ENTRY(workload) entry;            // 컨텍스트 워크로드 연결 리스트 엔트리
+};
+
+LIST_HEAD(workload_listhead, workload);
 
 // Structure for Apex.OS Task Info
 #define MAX_APEX_NAME_LEN 256
@@ -332,8 +350,8 @@ struct context {
 
     // 런타임 상태 (실행 중 변경되는 동적 상태)
     struct {
-        struct listhead tt_list;        // 시간 트리거 태스크 목록
-        struct sched_info sched_info;   // 스케줄링 정보
+        struct workload_listhead workloads; // 워크로드 리스트 (멀티 워크로드 지원)
+        uint32_t nr_workloads;              // 워크로드 수
         volatile sig_atomic_t shutdown_requested; // 종료 요청 플래그
         struct timespec starttimer_ts;  // 시작 타이머 타임스탬프
         struct apex_listhead apex_list; // Apex.OS Task List
@@ -345,9 +363,6 @@ struct context {
         sd_bus *dbus;                   // D-Bus 연결
         int apex_fd;                    // Apex.OS Monitor Socket FD
     } comm;
-
-    // 하이퍼피리어드 관리자 (hyperperiod.c에서 관리)
-    struct hyperperiod_manager hp_manager;
 };
 
 // ===== TT 시스템 함수 선언 =====
@@ -369,16 +384,17 @@ tt_error_t init_hyperperiod(struct context *ctx, const char *workload_id, uint64
 void hyperperiod_cycle_handler(union sigval value);
 uint64_t get_hyperperiod_relative_time(const struct hyperperiod_manager *hp_mgr);
 void log_hyperperiod_statistics(const struct hyperperiod_manager *hp_mgr);
-tt_error_t start_hyperperiod_timer(struct context *ctx);
+tt_error_t start_hyperperiod_timer(struct workload *wl);
 
 // ===== 태스크 관리 (task.c) =====
-tt_error_t init_task_list(struct context *ctx);
+tt_error_t init_task_list(struct workload *wl);
 void destroy_task_info_list(struct task_info *tasks);
 
 // ===== 네트워크 통신 (trpc.c) =====
 tt_error_t init_trpc(struct context *ctx);
 tt_error_t sync_timer_with_server(struct context *ctx);
-tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struct sched_info *sinfo);
+tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struct sched_info *sinfo, struct hyperperiod_manager *hp_mgr);
+tt_error_t deserialize_workloads(struct context *ctx, serial_buf_t *sbuf);
 tt_error_t report_deadline_miss(struct context *ctx, const char *taskname);
 
 // ===== 시그널 처리 (signal.c) =====

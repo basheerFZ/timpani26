@@ -57,14 +57,17 @@ tt_error_t handle_sigwait_bpf_event(void *ctx, void *data, size_t len)
 
     struct sigwait_event *e = (struct sigwait_event *)data;
     struct context *ctx_struct = (struct context *)ctx;
-    struct listhead *lh_p = (struct listhead *)&ctx_struct->runtime.tt_list;
+    struct workload *wl;
     struct time_trigger *tt_p;
 
-    LIST_FOREACH(tt_p, lh_p, entry) {
-        if (tt_p->task.pid == e->pid) {
-            tt_p->sigwait_ts = bpf_ktime_to_real(e->timestamp);
-            tt_p->sigwait_enter = e->enter;
-            break;
+    // Search across all workloads for the matching PID
+    LIST_FOREACH(wl, &ctx_struct->runtime.workloads, entry) {
+        LIST_FOREACH(tt_p, &wl->tt_list, entry) {
+            if (tt_p->task.pid == e->pid) {
+                tt_p->sigwait_ts = bpf_ktime_to_real(e->timestamp);
+                tt_p->sigwait_enter = e->enter;
+                return TT_SUCCESS;
+            }
         }
     }
 
@@ -131,24 +134,30 @@ tt_error_t handle_schedstat_bpf_event(void *ctx, void *data, size_t len)
 
     struct schedstat_event *e = (struct schedstat_event *)data;
     struct context *ctx_struct = (struct context *)ctx;
-    struct listhead *lh_p = (struct listhead *)&ctx_struct->runtime.tt_list;
+    struct workload *wl;
     struct time_trigger *tt_p;
+    struct time_trigger *found = NULL;
 
     uint64_t runtime, latency;
 
     runtime = (e->ts_stop - e->ts_start) / NSEC_PER_USEC;
     latency = (e->ts_start - e->ts_wakeup) / NSEC_PER_USEC;
 
-    LIST_FOREACH(tt_p, lh_p, entry) {
-        if (tt_p->task.pid == e->pid) {
-            TT_LOG_DEBUG("%-16s(%7d): CPU%d\truntime(%8lu us)\tlatency(%lu us)",
-                   tt_p->task.name, e->pid, e->cpu, runtime, latency);
-            break;
+    // Search across all workloads for the matching PID
+    LIST_FOREACH(wl, &ctx_struct->runtime.workloads, entry) {
+        LIST_FOREACH(tt_p, &wl->tt_list, entry) {
+            if (tt_p->task.pid == e->pid) {
+                TT_LOG_DEBUG("%-16s(%7d): CPU%d\truntime(%8lu us)\tlatency(%lu us)",
+                       tt_p->task.name, e->pid, e->cpu, runtime, latency);
+                found = tt_p;
+                break;
+            }
         }
+        if (found) break;
     }
 
-    if (ctx_struct->config.enable_plot && tt_p != NULL)
-        write_schedstat(ctx_struct, e, tt_p->task.name);
+    if (ctx_struct->config.enable_plot && found != NULL)
+        write_schedstat(ctx_struct, e, found->task.name);
 
     return TT_SUCCESS;
 }
@@ -178,8 +187,8 @@ void timer_expired_handler(union sigval value)
 
     clock_gettime(ctx->config.clockid, &before);
 
-    // Calculate position within hyperperiod
-    hyperperiod_position_us = get_hyperperiod_relative_time(&ctx->hp_manager);
+    // Calculate position within hyperperiod (use per-workload hp_manager)
+    hyperperiod_position_us = get_hyperperiod_relative_time(&tt_node->workload->hp_manager);
 
     TT_LOG_TIMER("%s: Timer expired: now: %lld, diff: %lld, hyperperiod_pos: %lu us",
             task->name, ts_ns(before), ts_diff(before, tt_node->prev_timer), hyperperiod_position_us);
@@ -199,8 +208,8 @@ void timer_expired_handler(union sigval value)
         if (!tt_node->sigwait_enter) {
             TT_LOG_ERROR("!!! DEADLINE MISS: STILL OVERRUN %s(%d): deadline %lu !!!",
                 task->name, task->pid, deadline_ns);
-            ctx->hp_manager.total_deadline_misses++;
-            ctx->hp_manager.cycle_deadline_misses++;
+            tt_node->workload->hp_manager.total_deadline_misses++;
+            tt_node->workload->hp_manager.cycle_deadline_misses++;
             if (report_deadline_miss(ctx, task->name) != TT_SUCCESS) {
                 TT_LOG_WARNING("Failed to report deadline miss for task %s", task->name);
             }
@@ -210,8 +219,8 @@ void timer_expired_handler(union sigval value)
                 task->name, task->pid, tt_node->sigwait_ts, deadline_ns);
             TT_LOG_ERROR("%s: Deadline miss: %lu diff",
                 task->name, tt_node->sigwait_ts - deadline_ns);
-            ctx->hp_manager.total_deadline_misses++;
-            ctx->hp_manager.cycle_deadline_misses++;
+            tt_node->workload->hp_manager.total_deadline_misses++;
+            tt_node->workload->hp_manager.cycle_deadline_misses++;
             if (report_deadline_miss(ctx, task->name) != TT_SUCCESS) {
                 TT_LOG_WARNING("Failed to report deadline miss for task %s", task->name);
             }
@@ -221,8 +230,8 @@ void timer_expired_handler(union sigval value)
                 task->name, task->pid, tt_node->sigwait_ts, deadline_ns);
             TT_LOG_ERROR("%s: Deadline miss (stuck): %lu diff",
                 task->name, tt_node->sigwait_ts - deadline_ns);
-            ctx->hp_manager.total_deadline_misses++;
-            ctx->hp_manager.cycle_deadline_misses++;
+            tt_node->workload->hp_manager.total_deadline_misses++;
+            tt_node->workload->hp_manager.cycle_deadline_misses++;
             if (report_deadline_miss(ctx, task->name) != TT_SUCCESS) {
                 TT_LOG_WARNING("Failed to report deadline miss for task %s", task->name);
             }
@@ -249,6 +258,7 @@ void timer_expired_handler(union sigval value)
 
 tt_error_t start_timers(struct context *ctx)
 {
+    struct workload *wl;
     struct time_trigger *tt_p;
 
     if (!ctx->config.enable_sync) {
@@ -257,35 +267,40 @@ tt_error_t start_timers(struct context *ctx)
         ctx->runtime.starttimer_ts.tv_nsec += TT_TIMER_INCREMENT_NS;
     }
 
-    LIST_FOREACH(tt_p, &ctx->runtime.tt_list, entry) {
-        struct itimerspec its;
-        struct sigevent sev;
+    // Iterate all workloads and start timers for each task
+    LIST_FOREACH(wl, &ctx->runtime.workloads, entry) {
+        TT_LOG_INFO("Starting timers for workload: %s", wl->sched_info.workload_id);
 
-        memset(&sev, 0, sizeof(sev));
-        memset(&its, 0, sizeof(its));
+        LIST_FOREACH(tt_p, &wl->tt_list, entry) {
+            struct itimerspec its;
+            struct sigevent sev;
 
-        sev.sigev_notify = SIGEV_THREAD;
-        sev.sigev_notify_function = timer_expired_handler;
-        sev.sigev_value.sival_ptr = tt_p;
+            memset(&sev, 0, sizeof(sev));
+            memset(&its, 0, sizeof(its));
 
-        its.it_value.tv_sec = ctx->runtime.starttimer_ts.tv_sec;
-        its.it_value.tv_nsec = ctx->runtime.starttimer_ts.tv_nsec;
-        its.it_interval.tv_sec = tt_p->task.period / USEC_PER_SEC;
-        its.it_interval.tv_nsec = tt_p->task.period % USEC_PER_SEC * NSEC_PER_USEC;
+            sev.sigev_notify = SIGEV_THREAD;
+            sev.sigev_notify_function = timer_expired_handler;
+            sev.sigev_value.sival_ptr = tt_p;
 
-        TT_LOG_DEBUG("%s(%d) period: %d starttimer_ts: %ld interval: %lds %ldns",
-                tt_p->task.name, tt_p->task.pid,
-                tt_p->task.period, ts_ns(its.it_value),
-                its.it_interval.tv_sec, its.it_interval.tv_nsec);
+            its.it_value.tv_sec = ctx->runtime.starttimer_ts.tv_sec;
+            its.it_value.tv_nsec = ctx->runtime.starttimer_ts.tv_nsec;
+            its.it_interval.tv_sec = tt_p->task.period / USEC_PER_SEC;
+            its.it_interval.tv_nsec = tt_p->task.period % USEC_PER_SEC * NSEC_PER_USEC;
 
-        if (timer_create(ctx->config.clockid, &sev, &tt_p->timer)) {
-            perror("Failed to create timer");
-            return TT_ERROR_TIMER;
-        }
+            TT_LOG_DEBUG("%s(%d) period: %d starttimer_ts: %ld interval: %lds %ldns",
+                    tt_p->task.name, tt_p->task.pid,
+                    tt_p->task.period, ts_ns(its.it_value),
+                    its.it_interval.tv_sec, its.it_interval.tv_nsec);
 
-        if (timer_settime(tt_p->timer, TIMER_ABSTIME, &its, NULL)) {
-            perror("Failed to start timer");
-            return TT_ERROR_TIMER;
+            if (timer_create(ctx->config.clockid, &sev, &tt_p->timer)) {
+                perror("Failed to create timer");
+                return TT_ERROR_TIMER;
+            }
+
+            if (timer_settime(tt_p->timer, TIMER_ABSTIME, &its, NULL)) {
+                perror("Failed to start timer");
+                return TT_ERROR_TIMER;
+            }
         }
     }
 
@@ -468,18 +483,23 @@ tt_error_t epoll_loop(struct context *ctx)
         return TT_ERROR_TIMER;
     }
 
+    // Register pidfds from all workloads
+    struct workload *wl;
     struct time_trigger *tt_p;
-    LIST_FOREACH(tt_p, &ctx->runtime.tt_list, entry) {
-        TT_LOG_INFO("TT will wake up Process %s(%d) with duration %d us, release_time %d, allowable_deadline_misses: %d",
-            tt_p->task.name, tt_p->task.pid, tt_p->task.period, tt_p->task.release_time, tt_p->task.allowable_deadline_misses);
+    LIST_FOREACH(wl, &ctx->runtime.workloads, entry) {
+        LIST_FOREACH(tt_p, &wl->tt_list, entry) {
+            TT_LOG_INFO("[%s] TT will wake up Process %s(%d) with duration %d us, release_time %d, allowable_deadline_misses: %d",
+                wl->sched_info.workload_id,
+                tt_p->task.name, tt_p->task.pid, tt_p->task.period, tt_p->task.release_time, tt_p->task.allowable_deadline_misses);
 
-        struct epoll_event event;
-        event.data.fd = tt_p->task.pidfd;
-        event.events = EPOLLIN;
-        if (epoll_ctl(efd, EPOLL_CTL_ADD, tt_p->task.pidfd, &event) < 0) {
-            perror("epoll_ctl failed");
-            close(efd);
-            return TT_ERROR_TIMER;
+            struct epoll_event event;
+            event.data.fd = tt_p->task.pidfd;
+            event.events = EPOLLIN;
+            if (epoll_ctl(efd, EPOLL_CTL_ADD, tt_p->task.pidfd, &event) < 0) {
+                perror("epoll_ctl failed");
+                close(efd);
+                return TT_ERROR_TIMER;
+            }
         }
     }
 
@@ -494,7 +514,8 @@ tt_error_t epoll_loop(struct context *ctx)
     }
 
     // Main execution loop with graceful shutdown support
-    TT_LOG_INFO("Time Trigger started. Press Ctrl+C to stop gracefully.");
+    TT_LOG_INFO("Time Trigger started with %u workload(s). Press Ctrl+C to stop gracefully.",
+        ctx->runtime.nr_workloads);
     while (!ctx->runtime.shutdown_requested) {
         struct epoll_event events[1];
         int count = epoll_wait(efd, events, 1, -1);
@@ -515,16 +536,21 @@ tt_error_t epoll_loop(struct context *ctx)
             continue;
 	}
 
-        // Handle process termination events
-        struct time_trigger *tt_p;
-        LIST_FOREACH(tt_p, &ctx->runtime.tt_list, entry) {
-            if (tt_p->task.pidfd == events[0].data.fd) {
-                // Handle task termination
-                TT_LOG_INFO("Task %s(%d) terminated", tt_p->task.name, tt_p->task.pid);
-                epoll_ctl(efd, EPOLL_CTL_DEL, tt_p->task.pidfd, NULL);
-                // TODO: Recovery from task termination
-                break;
+        // Handle process termination events - search across all workloads
+        int found = 0;
+        LIST_FOREACH(wl, &ctx->runtime.workloads, entry) {
+            LIST_FOREACH(tt_p, &wl->tt_list, entry) {
+                if (tt_p->task.pidfd == events[0].data.fd) {
+                    // Handle task termination
+                    TT_LOG_INFO("[%s] Task %s(%d) terminated",
+                        wl->sched_info.workload_id, tt_p->task.name, tt_p->task.pid);
+                    epoll_ctl(efd, EPOLL_CTL_DEL, tt_p->task.pidfd, NULL);
+                    // TODO: Recovery from task termination
+                    found = 1;
+                    break;
+                }
             }
+            if (found) break;
         }
     }
 

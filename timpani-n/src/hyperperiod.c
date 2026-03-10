@@ -100,49 +100,53 @@ void log_hyperperiod_statistics(const struct hyperperiod_manager *hp_mgr)
     TT_LOG_INFO("==============================");
 }
 
-tt_error_t start_hyperperiod_timer(struct context *ctx)
+tt_error_t start_hyperperiod_timer(struct workload *wl)
 {
     struct itimerspec its;
     struct sigevent sev;
+    struct context *ctx = wl->ctx;
+    struct hyperperiod_manager *hp_mgr = &wl->hp_manager;
 
-    if (ctx->hp_manager.hyperperiod_us == 0) {
-        TT_LOG_WARNING("Hyperperiod not set, skipping hyperperiod timer");
+    if (hp_mgr->hyperperiod_us == 0) {
+        TT_LOG_WARNING("Hyperperiod not set for workload %s, skipping hyperperiod timer",
+            hp_mgr->workload_id);
         return TT_SUCCESS;
     }
 
     // Set hyperperiod start time to match with task timers
-    ctx->hp_manager.hyperperiod_start_ts = ctx->runtime.starttimer_ts;
-    ctx->hp_manager.hyperperiod_start_time_us = ts_us(ctx->hp_manager.hyperperiod_start_ts);
+    hp_mgr->hyperperiod_start_ts = ctx->runtime.starttimer_ts;
+    hp_mgr->hyperperiod_start_time_us = ts_us(hp_mgr->hyperperiod_start_ts);
 
-    TT_LOG_INFO("Hyperperiod start time set: %lu us", ctx->hp_manager.hyperperiod_start_time_us);
+    TT_LOG_INFO("Workload %s: Hyperperiod start time set: %lu us",
+        hp_mgr->workload_id, hp_mgr->hyperperiod_start_time_us);
 
     memset(&sev, 0, sizeof(sev));
     memset(&its, 0, sizeof(its));
 
     sev.sigev_notify = SIGEV_THREAD;
     sev.sigev_notify_function = hyperperiod_cycle_handler;
-    sev.sigev_value.sival_ptr = &ctx->hp_manager;
+    sev.sigev_value.sival_ptr = hp_mgr;
 
     // Set hyperperiod cycle interval
-    its.it_value.tv_sec = ctx->runtime.starttimer_ts.tv_sec + (ctx->hp_manager.hyperperiod_us / USEC_PER_SEC);
-    its.it_value.tv_nsec = ctx->runtime.starttimer_ts.tv_nsec + (ctx->hp_manager.hyperperiod_us % USEC_PER_SEC) * NSEC_PER_USEC;
+    its.it_value.tv_sec = ctx->runtime.starttimer_ts.tv_sec + (hp_mgr->hyperperiod_us / USEC_PER_SEC);
+    its.it_value.tv_nsec = ctx->runtime.starttimer_ts.tv_nsec + (hp_mgr->hyperperiod_us % USEC_PER_SEC) * NSEC_PER_USEC;
     if (its.it_value.tv_nsec >= NSEC_PER_SEC) {
         its.it_value.tv_sec++;
         its.it_value.tv_nsec -= NSEC_PER_SEC;
     }
 
-    its.it_interval.tv_sec = ctx->hp_manager.hyperperiod_us / USEC_PER_SEC;
-    its.it_interval.tv_nsec = (ctx->hp_manager.hyperperiod_us % USEC_PER_SEC) * NSEC_PER_USEC;
+    its.it_interval.tv_sec = hp_mgr->hyperperiod_us / USEC_PER_SEC;
+    its.it_interval.tv_nsec = (hp_mgr->hyperperiod_us % USEC_PER_SEC) * NSEC_PER_USEC;
 
-    TT_LOG_INFO("Starting hyperperiod timer: %lu us interval (%lds %ldns)",
-        ctx->hp_manager.hyperperiod_us, its.it_interval.tv_sec, its.it_interval.tv_nsec);
+    TT_LOG_INFO("Workload %s: Starting hyperperiod timer: %lu us interval (%lds %ldns)",
+        hp_mgr->workload_id, hp_mgr->hyperperiod_us, its.it_interval.tv_sec, its.it_interval.tv_nsec);
 
-    if (timer_create(ctx->config.clockid, &sev, &ctx->hp_manager.hyperperiod_timer)) {
+    if (timer_create(ctx->config.clockid, &sev, &hp_mgr->hyperperiod_timer)) {
         perror("Failed to create hyperperiod timer");
         return TT_ERROR_TIMER;
     }
 
-    if (timer_settime(ctx->hp_manager.hyperperiod_timer, TIMER_ABSTIME, &its, NULL)) {
+    if (timer_settime(hp_mgr->hyperperiod_timer, TIMER_ABSTIME, &its, NULL)) {
         perror("Failed to start hyperperiod timer");
         return TT_ERROR_TIMER;
     }

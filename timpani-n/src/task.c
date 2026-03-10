@@ -14,7 +14,7 @@ void destroy_task_info_list(struct task_info *tasks)
     }
 }
 
-static struct time_trigger *task_create_node(struct task_info *ti, struct context *ctx)
+static struct time_trigger *task_create_node(struct task_info *ti, struct workload *wl)
 {
     struct time_trigger *tt_node = calloc(1, sizeof(struct time_trigger));
     if (!tt_node) {
@@ -23,7 +23,8 @@ static struct time_trigger *task_create_node(struct task_info *ti, struct contex
     }
 
     memcpy(&tt_node->task, ti, sizeof(tt_node->task));
-    tt_node->ctx = ctx;  // context 포인터 설정
+    tt_node->ctx = wl->ctx;       // context 포인터 설정
+    tt_node->workload = wl;       // 소속 워크로드 포인터 설정
     return tt_node;
 }
 
@@ -68,19 +69,20 @@ static tt_error_t task_setup_process(struct time_trigger *tt_node)
     return TT_SUCCESS;
 }
 
-tt_error_t init_task_list(struct context *ctx)
+tt_error_t init_task_list(struct workload *wl)
 {
     int success_count = 0;
+    struct context *ctx = wl->ctx;
 
-    // LIST_INIT는 config_set_defaults에서 이미 호출됨
+    TT_LOG_INFO("Initializing tasks for workload: %s", wl->sched_info.workload_id);
 
-    for (struct task_info *ti = ctx->runtime.sched_info.tasks; ti; ti = ti->next) {
+    for (struct task_info *ti = wl->sched_info.tasks; ti; ti = ti->next) {
         if (strcmp(ctx->config.node_id, ti->node_id) != 0) {
             /* The task does not belong to this node. */
             continue;
         }
 
-        struct time_trigger *tt_node = task_create_node(ti, ctx);
+        struct time_trigger *tt_node = task_create_node(ti, wl);
         if (!tt_node) {
             continue;
         }
@@ -90,19 +92,23 @@ tt_error_t init_task_list(struct context *ctx)
             continue;
         }
 
-        LIST_INSERT_HEAD(&ctx->runtime.tt_list, tt_node, entry);
+        LIST_INSERT_HEAD(&wl->tt_list, tt_node, entry);
 
         // Count tasks for hyperperiod management
-        ctx->hp_manager.tasks_in_hyperperiod++;
+        wl->hp_manager.tasks_in_hyperperiod++;
 
         success_count++;
     }
 
+    wl->nr_active_tasks = success_count;
+
     if (success_count == 0) {
-        TT_LOG_ERROR("No tasks were successfully initialized");
+        TT_LOG_ERROR("No tasks were successfully initialized for workload %s",
+            wl->sched_info.workload_id);
         return TT_ERROR_CONFIG;
     }
 
-    TT_LOG_INFO("Successfully initialized %d tasks", success_count);
+    TT_LOG_INFO("Successfully initialized %d tasks for workload %s",
+        success_count, wl->sched_info.workload_id);
     return TT_SUCCESS;
 }

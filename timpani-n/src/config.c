@@ -15,7 +15,8 @@ static void config_set_defaults(struct context *ctx)
 
     // 런타임 상태 명시적 초기화
     ctx->runtime.shutdown_requested = 0;
-    LIST_INIT(&ctx->runtime.tt_list);
+    LIST_INIT(&ctx->runtime.workloads);
+    ctx->runtime.nr_workloads = 0;
     LIST_INIT(&ctx->runtime.apex_list);
 
     ctx->config.cpu = -1;
