@@ -121,3 +121,198 @@ GoogleTest framework is required for testing.
   ./tests/test_global_scheduler
   ./tests/test_node_config
   ```
+
+## Container Deployment
+
+TIMPANI-O can be built and deployed as a container image for Docker or Podman.
+
+### Ports
+
+| Port | Protocol | Service |
+|------|----------|---------|
+| 50052 | gRPC | SchedInfoServer |
+| 7777 | TCP | D-Bus Server (libtrpc) |
+
+### Prerequisites
+
+- Docker 20.10+ or Podman 4.0+
+- For multi-arch builds: Docker Buildx or Podman with manifest support
+
+### Build Image
+
+#### Using Docker
+
+```bash
+# Initialize submodule (required for container build)
+git submodule update --init --recursive
+
+# Build for current architecture
+./scripts/build-image.sh v0.1.0
+
+# Build for amd64 and arm64
+./scripts/build-multiarch.sh v0.1.0
+```
+
+#### Using Podman
+
+```bash
+# Initialize submodule
+git submodule update --init --recursive
+
+# Build for current architecture
+podman build -t sdv.lge.com/timpani/timpani-o:v0.1.0 .
+
+# Build for specific architecture
+podman build --platform linux/amd64 -t sdv.lge.com/timpani/timpani-o:v0.1.0-amd64 .
+podman build --platform linux/arm64 -t sdv.lge.com/timpani/timpani-o:v0.1.0-arm64 .
+
+# Create multi-arch manifest
+podman manifest create sdv.lge.com/timpani/timpani-o:v0.1.0
+podman manifest add sdv.lge.com/timpani/timpani-o:v0.1.0 sdv.lge.com/timpani/timpani-o:v0.1.0-amd64
+podman manifest add sdv.lge.com/timpani/timpani-o:v0.1.0 sdv.lge.com/timpani/timpani-o:v0.1.0-arm64
+```
+
+### Run Container
+
+컨테이너 이미지에는 기본 설정 파일(`/timpani-o/examples/node_configurations.yaml`)이 포함되어 있습니다.
+
+#### 방법 1: 이미지에 포함된 기본 설정 파일 사용
+
+설정 파일 수정이 필요 없는 경우, 이미지에 포함된 예제 설정 파일을 바로 사용할 수 있습니다.
+
+**Docker:**
+```bash
+docker run -d \
+  --name timpani-o \
+  -p 50052:50052 \
+  -p 7777:7777 \
+  sdv.lge.com/timpani/timpani-o:latest \
+  -s 50052 -d 7777 -c /timpani-o/examples/node_configurations.yaml
+```
+
+**Podman:**
+```bash
+podman run -d \
+  --name timpani-o \
+  -p 50052:50052 \
+  -p 7777:7777 \
+  sdv.lge.com/timpani/timpani-o:latest \
+  -s 50052 -d 7777 -c /timpani-o/examples/node_configurations.yaml
+```
+
+#### 방법 2: 사용자 설정 파일 볼륨 마운트
+
+사용자 환경에 맞는 설정 파일을 사용하려면 볼륨 마운트를 통해 컨테이너에 전달합니다.
+
+**Docker:**
+```bash
+docker run -d \
+  --name timpani-o \
+  -p 50052:50052 \
+  -p 7777:7777 \
+  -v /path/to/your/node_configurations.yaml:/config/node_configurations.yaml:ro \
+  sdv.lge.com/timpani/timpani-o:latest \
+  -s 50052 -d 7777 -c /config/node_configurations.yaml
+```
+
+**Podman:**
+```bash
+podman run -d \
+  --name timpani-o \
+  -p 50052:50052 \
+  -p 7777:7777 \
+  -v /path/to/your/node_configurations.yaml:/config/node_configurations.yaml:ro \
+  sdv.lge.com/timpani/timpani-o:latest \
+  -s 50052 -d 7777 -c /config/node_configurations.yaml
+```
+
+#### 방법 3: 설정 파일 없이 실행
+
+설정 파일 없이 기본 모드로 실행할 수도 있습니다.
+
+```bash
+# Docker
+docker run -d --name timpani-o -p 50052:50052 -p 7777:7777 \
+  sdv.lge.com/timpani/timpani-o:latest
+
+# Podman
+podman run -d --name timpani-o -p 50052:50052 -p 7777:7777 \
+  sdv.lge.com/timpani/timpani-o:latest
+```
+
+#### docker-compose / podman-compose 사용
+
+```bash
+# Docker
+docker-compose up -d
+
+# Podman
+podman-compose up -d
+```
+
+> **Note:** `docker-compose.yml`은 방법 2(볼륨 마운트)를 사용합니다. 
+> 필요에 따라 `command` 섹션을 수정하세요.
+
+### Push to Registry
+
+#### Using Docker
+
+```bash
+# Login to internal registry
+docker login sdv.lge.com
+
+# Push image
+./scripts/push-image.sh v0.1.0
+
+# Or build and push multi-arch in one step
+./scripts/build-multiarch.sh v0.1.0 --push
+```
+
+#### Using Podman
+
+```bash
+# Login to internal registry
+podman login sdv.lge.com
+
+# Push single image
+podman push sdv.lge.com/timpani/timpani-o:v0.1.0
+
+# Push multi-arch manifest
+podman manifest push sdv.lge.com/timpani/timpani-o:v0.1.0
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SINFO_PORT` | 50052 | gRPC SchedInfoServer port |
+| `DBUS_PORT` | 7777 | D-Bus Server port |
+| `FAULT_HOST` | localhost | Piccolo FaultService host |
+| `FAULT_PORT` | 50053 | Piccolo FaultService port |
+
+### Connecting to Piccolo
+
+To connect timpani-o to Piccolo's FaultService running on the host:
+
+#### Docker
+```bash
+docker run -d \
+  --name timpani-o \
+  -p 50052:50052 \
+  -p 7777:7777 \
+  --add-host=host.docker.internal:host-gateway \
+  sdv.lge.com/timpani/timpani-o:latest \
+  -f host.docker.internal -p 50053
+```
+
+#### Podman
+```bash
+podman run -d \
+  --name timpani-o \
+  -p 50052:50052 \
+  -p 7777:7777 \
+  --network=host \
+  sdv.lge.com/timpani/timpani-o:latest \
+  -f localhost -p 50053
+```
+
