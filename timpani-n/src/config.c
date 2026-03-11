@@ -4,6 +4,7 @@
  */
 
 #include "internal.h"
+#include <unistd.h>
 
 // 기본값 설정
 static void config_set_defaults(struct context *ctx)
@@ -21,7 +22,11 @@ static void config_set_defaults(struct context *ctx)
     ctx->config.prio = -1;
     ctx->config.port = 7777;
     ctx->config.addr = "127.0.0.1";
-    strncpy(ctx->config.node_id, "1", sizeof(ctx->config.node_id) - 1);
+
+    // 기본값으로 hostname 사용, 실패시 "1"
+    if (gethostname(ctx->config.node_id, sizeof(ctx->config.node_id)) != 0) {
+        strncpy(ctx->config.node_id, "1", sizeof(ctx->config.node_id) - 1);
+    }
     ctx->config.node_id[sizeof(ctx->config.node_id) - 1] = '\0';
     ctx->config.enable_sync = false;
     ctx->config.enable_plot = false;
@@ -37,7 +42,7 @@ static void print_usage(const char *program_name)
             "  -c <cpu_num>\tcpu affinity for timetrigger\n"
             "  -P <prio>\tRT priority (1~99) for timetrigger\n"
             "  -p <port>\tport to connect to\n"
-            "  -n <node id>\tNode ID\n"
+            "  -n <node id>\tNode ID (default: hostname)\n"
             "  -l <level>\tLog level (0=silent, 1=error, 2=warning, 3=info, 4=debug, 5=verbose)\n"
             "  -s\tEnable timer synchronization across multiple nodes\n"
             "  -g\tEnable saving plot data file by using BPF (<node id>.gpdata)\n"
