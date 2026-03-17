@@ -3,8 +3,12 @@
 
 cmake_minimum_required(VERSION 3.5)
 
+# Read version from VERSION file
+file(READ "${CMAKE_SOURCE_DIR}/VERSION" VERSION_CONTENT)
+string(STRIP "${VERSION_CONTENT}" PROJECT_VERSION_STRING)
+
 # Project name and version
-project(timpani-o VERSION 0.1.0 DESCRIPTION "Timpani-O")
+project(timpani-o VERSION ${PROJECT_VERSION_STRING} DESCRIPTION "Timpani-O Orchestrator")
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)

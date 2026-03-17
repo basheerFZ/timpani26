@@ -5,6 +5,14 @@
 
 # TIMPANI-O
 
+**Timpani-O** is the orchestrator component of the TIMPANI project, responsible for distributing task schedules to Timpani-N instances via gRPC.
+
+| | |
+|---|---|
+| **Version** | 2026.03.0 ([CalVer](https://calver.org/)) |
+| **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+| **License** | MIT |
+
 ## Getting started
 
 Refer to [TIMPANI-N's README.md](https://github.com/MCO-PICCOLO/TIMPANI/blob/main/timpani-n/README.md) for the full description of the project.
