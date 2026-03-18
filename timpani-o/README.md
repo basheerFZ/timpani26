@@ -182,11 +182,11 @@ podman manifest add sdv.lge.com/timpani/timpani-o:v0.1.0 sdv.lge.com/timpani/tim
 
 ### Run Container
 
-컨테이너 이미지에는 기본 설정 파일(`/timpani-o/examples/node_configurations.yaml`)이 포함되어 있습니다.
+The container image includes a default configuration file (`/timpani-o/examples/node_configurations.yaml`).
 
-#### 방법 1: 이미지에 포함된 기본 설정 파일 사용
+#### Method 1: Use the default configuration file included in the image
 
-설정 파일 수정이 필요 없는 경우, 이미지에 포함된 예제 설정 파일을 바로 사용할 수 있습니다.
+If no configuration changes are needed, you can use the example configuration file included in the image directly.
 
 **Docker:**
 ```bash
@@ -208,9 +208,9 @@ podman run -d \
   -s 50052 -d 7777 -c /timpani-o/examples/node_configurations.yaml
 ```
 
-#### 방법 2: 사용자 설정 파일 볼륨 마운트
+#### Method 2: Volume mount a custom configuration file
 
-사용자 환경에 맞는 설정 파일을 사용하려면 볼륨 마운트를 통해 컨테이너에 전달합니다.
+To use a configuration file tailored to your environment, pass it to the container via volume mount.
 
 **Docker:**
 ```bash
@@ -234,9 +234,9 @@ podman run -d \
   -s 50052 -d 7777 -c /config/node_configurations.yaml
 ```
 
-#### 방법 3: 설정 파일 없이 실행
+#### Method 3: Run without a configuration file
 
-설정 파일 없이 기본 모드로 실행할 수도 있습니다.
+You can also run in default mode without a configuration file.
 
 ```bash
 # Docker
@@ -248,7 +248,7 @@ podman run -d --name timpani-o -p 50052:50052 -p 7777:7777 \
   sdv.lge.com/timpani/timpani-o:latest
 ```
 
-#### docker-compose / podman-compose 사용
+#### Using docker-compose / podman-compose
 
 ```bash
 # Docker
@@ -258,8 +258,8 @@ docker-compose up -d
 podman-compose up -d
 ```
 
-> **Note:** `docker-compose.yml`은 방법 2(볼륨 마운트)를 사용합니다. 
-> 필요에 따라 `command` 섹션을 수정하세요.
+> **Note:** `docker-compose.yml` uses Method 2 (volume mount).
+> Modify the `command` section as needed.
 
 ### Push to Registry
 
