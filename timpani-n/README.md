@@ -5,13 +5,7 @@
 
 # Timpani-N
 
-
-
 ## Getting started
-
-![TT_1](tt_1.PNG)
-![TT_2](tt_2.PNG)
-![TT_3](tt_3.PNG)
 
 ## Prerequisites
 
@@ -122,7 +116,7 @@ cd build
 execute time trigger in other terminal
 ```
 cd build
-sudo ./timetrigger
+sudo ./timpani-n
 ```
 
 ***
