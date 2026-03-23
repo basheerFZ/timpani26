@@ -18,7 +18,7 @@ tt_error_t init_hyperperiod(struct context *ctx, const char *workload_id, uint64
     hp_mgr->total_deadline_misses = 0;
     hp_mgr->cycle_deadline_misses = 0;
     hp_mgr->tasks_in_hyperperiod = 0;
-    hp_mgr->ctx = ctx;  // Context 포인터 설정
+    hp_mgr->ctx = ctx;  // Set context pointer
 
     // Hyperperiod start time will be set when timers actually start
     hp_mgr->hyperperiod_start_time_us = 0;
@@ -65,7 +65,7 @@ uint64_t get_hyperperiod_relative_time(const struct hyperperiod_manager *hp_mgr)
 {
     struct timespec now;
 
-    // 빠른 NULL 검사
+    // Quick NULL check
     if (unlikely(!hp_mgr || hp_mgr->hyperperiod_start_time_us == 0)) {
         return 0;
     }
@@ -75,12 +75,12 @@ uint64_t get_hyperperiod_relative_time(const struct hyperperiod_manager *hp_mgr)
 
     uint64_t elapsed_us = current_time_us - hp_mgr->hyperperiod_start_time_us;
 
-    // 비트 연산으로 모듈로 연산 최적화 (2의 거듭제곱일 때)
+    // Optimize modulo with bitwise operation (when power of 2)
     if (hp_mgr->hyperperiod_us & (hp_mgr->hyperperiod_us - 1)) {
-        // 일반적인 모듈로 연산
+        // Regular modulo operation
         return elapsed_us % hp_mgr->hyperperiod_us;
     } else {
-        // 2의 거듭제곱인 경우 비트 마스크 사용
+        // Use bitmask for power of 2
         return elapsed_us & (hp_mgr->hyperperiod_us - 1);
     }
 }

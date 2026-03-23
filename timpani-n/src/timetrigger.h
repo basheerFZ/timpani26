@@ -7,12 +7,12 @@ extern "C" {
 
 #define SIGNO_TT		__SIGRTMIN+2
 
-// 시간 상수 정의 (TT_ namespace)
+// Time constant definitions (TT_ namespace)
 #define TT_NSEC_PER_SEC         1000000000ULL
 #define TT_USEC_PER_SEC         1000000ULL
 #define TT_NSEC_PER_USEC        1000ULL
 
-// 인라인 시간 변환 함수들 (개선된 API)
+// Inline time conversion functions (improved API)
 static inline uint64_t tt_timespec_to_ns(const struct timespec *ts)
 {
     return ((uint64_t)ts->tv_sec * TT_NSEC_PER_SEC) + ts->tv_nsec;
@@ -52,12 +52,12 @@ static inline uint64_t tt_timespec_diff_ns(const struct timespec *b, const struc
     return tt_timespec_to_ns(b) - tt_timespec_to_ns(a);
 }
 
-// 하위 호환성을 위한 매크로 (점진적 마이그레이션용)
+// Backward compatibility macros (for gradual migration)
 #define NSEC_PER_SEC    TT_NSEC_PER_SEC
 #define USEC_PER_SEC    TT_USEC_PER_SEC
 #define NSEC_PER_USEC   TT_NSEC_PER_USEC
 
-// 기존 매크로를 새로운 API로 매핑 (레거시 지원)
+// Map legacy macros to new API (legacy support)
 #define ts_ns(a)        tt_timespec_to_ns(&(a))
 #define ts_us(a)        tt_timespec_to_us(&(a))
 #define us_ts(us)       tt_us_to_timespec(us)

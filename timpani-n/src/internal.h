@@ -26,18 +26,18 @@
 #include <libtrpc.h>
 #include "trace_bpf.h"
 
-// ===== 통합된 스케줄링 함수들 =====
-// 기존 libttsched에서 가져온 함수들
+// ===== Integrated scheduling functions =====
+// Functions imported from legacy libttsched
 
-// TTSCHED 에러 코드 시스템
+// TTSCHED error code system
 typedef enum {
-    TTSCHED_SUCCESS = 0,           // 성공
-    TTSCHED_ERROR_INVALID_ARGS = -1, // 잘못된 인자
-    TTSCHED_ERROR_PERMISSION = -2,   // 권한 오류
-    TTSCHED_ERROR_SYSTEM = -3        // 시스템 오류
+    TTSCHED_SUCCESS = 0,           // Success
+    TTSCHED_ERROR_INVALID_ARGS = -1, // Invalid arguments
+    TTSCHED_ERROR_PERMISSION = -2,   // Permission error
+    TTSCHED_ERROR_SYSTEM = -3        // System error
 } ttsched_error_t;
 
-// 에러 메시지 함수
+// Error message function
 static inline const char* ttsched_error_string(ttsched_error_t error)
 {
     switch (error) {
@@ -60,7 +60,7 @@ struct sched_attr_tt {
     uint64_t sched_period;
 };
 
-// 스케줄링 함수 선언
+// Scheduling function declarations
 ttsched_error_t set_affinity(pid_t pid, int cpu);
 ttsched_error_t set_affinity_cpumask(pid_t pid, uint64_t cpumask);
 ttsched_error_t set_affinity_cpumask_all_threads(pid_t pid, uint64_t cpumask);
@@ -72,14 +72,14 @@ ttsched_error_t create_pidfd(pid_t pid, int *pidfd);
 ttsched_error_t send_signal_pidfd(int pidfd, int signal);
 ttsched_error_t is_process_alive(int pidfd, int *alive);
 
-// ===== BPF 트레이싱 함수들 =====
+// ===== BPF tracing functions =====
 
 // ring_buffer callback function type from libbpf.h
 typedef int (*ring_buffer_sample_fn)(void *ctx, void *data, size_t size);
 
-// BPF 트레이싱만 사용하므로 ftrace 관련 함수들 제거됨
+// Only BPF tracing is used; ftrace-related functions have been removed
 
-// BPF 트레이싱 함수 선언
+// BPF tracing function declarations
 
 #ifdef CONFIG_TRACE_BPF
 int bpf_on(ring_buffer_sample_fn sigwait_cb, ring_buffer_sample_fn schedstat_cb, void *ctx);
@@ -93,39 +93,39 @@ static inline int bpf_add_pid(int pid) { return 0; }
 static inline int bpf_del_pid(int pid) { return 0; }
 #endif
 
-// ===== TT 시스템 상수 정의 =====
-// Time Trigger 시스템에서 사용하는 모든 상수들을 TT_ 네임스페이스로 관리
+// ===== TT system constant definitions =====
+// All constants used in the Time Trigger system, managed under the TT_ namespace
 
-// 타이머 관련 상수
-#define TT_TIMER_INCREMENT_NS        (5 * 1000 * 1000)   // 5ms - 타이머 정밀도 조정 값
+// Timer-related constants
+#define TT_TIMER_INCREMENT_NS        (5 * 1000 * 1000)   // 5ms - timer precision adjustment value
 
-// 네트워크 통신 상수
-#define TT_POLLING_INTERVAL_US       (100 * 1000)        // 100ms - 폴링 간격
-#define TT_RETRY_INTERVAL_US         (1000 * 1000)       // 1s - 재시도 간격
-#define TT_MAX_CONNECTION_RETRIES    300                 // 최대 연결 재시도 횟수
+// Network communication constants
+#define TT_POLLING_INTERVAL_US       (100 * 1000)        // 100ms - polling interval
+#define TT_RETRY_INTERVAL_US         (1000 * 1000)       // 1s - retry interval
+#define TT_MAX_CONNECTION_RETRIES    300                 // Maximum connection retry count
 
-// 로깅 및 통계 상수
-#define TT_STATISTICS_LOG_INTERVAL   100                 // 통계 로그 출력 주기 (하이퍼피리어드 사이클 기준)
+// Logging and statistics constants
+#define TT_STATISTICS_LOG_INTERVAL   100                 // Statistics log output interval (based on hyperperiod cycles)
 
-// ===== 로그 레벨 시스템 =====
+// ===== Log level system =====
 typedef enum {
-    TT_LOG_LEVEL_SILENT = 0,     // 로그 출력 없음
-    TT_LOG_LEVEL_ERROR = 1,      // 에러만
-    TT_LOG_LEVEL_WARNING = 2,    // 경고 이상
-    TT_LOG_LEVEL_INFO = 3,       // 정보 이상 (기본값)
-    TT_LOG_LEVEL_DEBUG = 4,      // 모든 로그
-    TT_LOG_LEVEL_VERBOSE = 5     // 매우 상세한 로그 (성능 영향)
+    TT_LOG_LEVEL_SILENT = 0,     // No log output
+    TT_LOG_LEVEL_ERROR = 1,      // Errors only
+    TT_LOG_LEVEL_WARNING = 2,    // Warnings and above
+    TT_LOG_LEVEL_INFO = 3,       // Info and above (default)
+    TT_LOG_LEVEL_DEBUG = 4,      // All logs
+    TT_LOG_LEVEL_VERBOSE = 5     // Very detailed logs (may impact performance)
 } tt_log_level_t;
 
-// 전역 로그 레벨 (기본값: INFO)
+// Global log level (default: INFO)
 extern tt_log_level_t tt_global_log_level;
 
-// 로그 레벨 설정 함수
+// Log level setter function
 static inline void tt_set_log_level(tt_log_level_t level) {
     tt_global_log_level = level;
 }
 
-// 개선된 로깅 매크로
+// Improved logging macros
 #define TT_LOG_ERROR(fmt, ...) \
     do { \
         if (tt_global_log_level >= TT_LOG_LEVEL_ERROR) { \
@@ -154,7 +154,7 @@ static inline void tt_set_log_level(tt_log_level_t level) {
         } \
     } while(0)
 
-// 타이머 핸들러용 고성능 로깅 (빈번한 호출 시 성능 최적화)
+// High-performance logging for timer handlers (optimized for frequent calls)
 #define TT_LOG_TIMER(fmt, ...) \
     do { \
         if (unlikely(tt_global_log_level >= TT_LOG_LEVEL_VERBOSE)) { \
@@ -170,7 +170,7 @@ static inline void tt_set_log_level(tt_log_level_t level) {
         } \
     } while(0)
 
-// 메모리 관리 매크로
+// Memory management macros
 #define TT_MALLOC(ptr, type) \
     do { \
         (ptr) = malloc(sizeof(type)); \
@@ -204,7 +204,7 @@ static inline void tt_set_log_level(tt_log_level_t level) {
         (ptr) = NULL; \
     } while(0)
 
-// 컴파일러 힌트 매크로
+// Compiler hint macros
 #ifndef likely
 #define likely(x)   __builtin_expect(!!(x), 1)
 #endif
@@ -212,22 +212,22 @@ static inline void tt_set_log_level(tt_log_level_t level) {
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #endif
 
-// ===== TT 에러 코드 시스템 =====
-// 모든 함수는 통일된 tt_error_t 타입을 반환하여 일관된 에러 처리 제공
+// ===== TT error code system =====
+// All functions return a unified tt_error_t type for consistent error handling
 typedef enum {
-    TT_SUCCESS = 0,              // 성공
-    TT_ERROR_MEMORY = -1,        // 메모리 할당 실패
-    TT_ERROR_TIMER = -2,         // 타이머 관련 오류
-    TT_ERROR_SIGNAL = -3,        // 시그널 처리 오류
-    TT_ERROR_NETWORK = -4,       // 네트워크 통신 오류
-    TT_ERROR_CONFIG = -5,        // 설정 관련 오류
-    TT_ERROR_BPF = -6,           // BPF 프로그램 오류
-    TT_ERROR_INVALID_ARGS = -7,  // 잘못된 인자
-    TT_ERROR_IO = -8,            // 입출력 오류
-    TT_ERROR_PERMISSION = -9     // 권한 오류
+    TT_SUCCESS = 0,              // Success
+    TT_ERROR_MEMORY = -1,        // Memory allocation failure
+    TT_ERROR_TIMER = -2,         // Timer-related error
+    TT_ERROR_SIGNAL = -3,        // Signal handling error
+    TT_ERROR_NETWORK = -4,       // Network communication error
+    TT_ERROR_CONFIG = -5,        // Configuration error
+    TT_ERROR_BPF = -6,           // BPF program error
+    TT_ERROR_INVALID_ARGS = -7,  // Invalid arguments
+    TT_ERROR_IO = -8,            // Input/output error
+    TT_ERROR_PERMISSION = -9     // Permission error
 } tt_error_t;
 
-// 에러 메시지 함수
+// Error message function
 static inline const char* tt_error_string(tt_error_t error)
 {
     switch (error) {
@@ -245,7 +245,7 @@ static inline const char* tt_error_string(tt_error_t error)
     }
 }
 
-// 시간 처리 유틸리티 함수 (timetrigger.h의 통합 API 사용)
+// Time processing utility functions (using the unified API from timetrigger.h)
 static inline void tt_timespec_add_us(struct timespec *ts, uint64_t us)
 {
     uint64_t total_ns = tt_timespec_to_ns(ts) + (us * TT_NSEC_PER_USEC);
@@ -258,7 +258,7 @@ struct context;
 // Forward declaration
 struct workload;
 
-// Time trigger 구조체
+// Time trigger structure
 struct time_trigger {
     timer_t timer;
     struct task_info task;
@@ -268,49 +268,49 @@ struct time_trigger {
     uint8_t sigwait_enter;
 #endif
     struct timespec prev_timer;
-    struct context *ctx;      // context 포인터
-    struct workload *workload; // 소속 워크로드 포인터
+    struct context *ctx;      // context pointer
+    struct workload *workload; // owning workload pointer
     LIST_ENTRY(time_trigger) entry;
 };
 
-// Hyperperiod 관리 구조체 (메모리 정렬 최적화)
+// Hyperperiod management structure (memory alignment optimized)
 struct hyperperiod_manager {
-    // 자주 접근하는 필드들을 앞으로
+    // Frequently accessed fields placed first
     uint64_t hyperperiod_us;
     uint64_t current_cycle;
     uint64_t hyperperiod_start_time_us;
     uint64_t completed_cycles;
 
-    // 포인터들
+    // Pointers
     struct time_trigger *tt_list;
     struct context *ctx;
 
-    // 타이머 관련
+    // Timer-related
     timer_t hyperperiod_timer;
     struct timespec hyperperiod_start_ts;
 
-    // 통계 (32비트)
+    // Statistics (32-bit)
     uint32_t tasks_in_hyperperiod;
     uint32_t total_deadline_misses;
     uint32_t cycle_deadline_misses;
-    uint32_t _padding;  // 8바이트 정렬을 위한 패딩
+    uint32_t _padding;  // padding for 8-byte alignment
 
-    // 문자열 (마지막에 배치)
+    // Strings (placed last)
     char workload_id[64];
 } __attribute__((packed, aligned(8)));
 
 LIST_HEAD(listhead, time_trigger);
 
-// ===== 워크로드 구조체 =====
-// 멀티 워크로드 지원을 위한 워크로드 단위 관리 구조체
-// 각 워크로드는 자체 sched_info, hyperperiod_manager, task list를 보유
+// ===== Workload structure =====
+// Per-workload management structure for multi-workload support
+// Each workload owns its own sched_info, hyperperiod_manager, and task list
 struct workload {
-    struct sched_info sched_info;           // 워크로드별 스케줄링 정보 (태스크 연결 리스트)
-    struct hyperperiod_manager hp_manager;  // 워크로드별 하이퍼피리어드 타이머 및 통계
-    struct listhead tt_list;               // 워크로드별 time_trigger 리스트
-    int nr_active_tasks;                   // 성공적으로 초기화된 태스크 수
-    struct context *ctx;                   // 컨텍스트 역참조 포인터
-    LIST_ENTRY(workload) entry;            // 컨텍스트 워크로드 연결 리스트 엔트리
+    struct sched_info sched_info;           // Per-workload scheduling info (task linked list)
+    struct hyperperiod_manager hp_manager;  // Per-workload hyperperiod timer and statistics
+    struct listhead tt_list;               // Per-workload time_trigger list
+    int nr_active_tasks;                   // Number of successfully initialized tasks
+    struct context *ctx;                   // Context back-reference pointer
+    LIST_ENTRY(workload) entry;            // Context workload linked list entry
 };
 
 LIST_HEAD(workload_listhead, workload);
@@ -330,80 +330,80 @@ struct apex_info {
 
 LIST_HEAD(apex_listhead, apex_info);
 
-// ===== TT 시스템 컨텍스트 구조체 =====
-// 전역 변수를 대체하는 중앙화된 컨텍스트 관리
-// 모든 모듈에서 필요한 상태와 설정을 하나의 구조체로 통합
+// ===== TT system context structure =====
+// Centralized context management replacing global variables
+// Consolidates all state and configuration needed by every module into a single structure
 struct context {
-    // 시스템 설정 (config.c에서 초기화)
+    // System configuration (initialized in config.c)
     struct {
-        int cpu;                        // CPU 바인딩 번호
-        int prio;                       // 스케줄링 우선순위
-        int port;                       // 네트워크 포트
-        const char *addr;               // 서버 주소
-        char node_id[TINFO_NODEID_MAX]; // 노드 식별자
-        bool enable_sync;               // 타이머 동기화 활성화
-        bool enable_plot;               // 플롯 기능 활성화
+        int cpu;                        // CPU binding number
+        int prio;                       // Scheduling priority
+        int port;                       // Network port
+        const char *addr;               // Server address
+        char node_id[TINFO_NODEID_MAX]; // Node identifier
+        bool enable_sync;               // Timer synchronization enabled
+        bool enable_plot;               // Plot feature enabled
 	bool enable_apex;               // Apex.OS Test Mode
-        clockid_t clockid;              // 사용할 클록 타입
-        tt_log_level_t log_level;       // 로그 레벨
+        clockid_t clockid;              // Clock type to use
+        tt_log_level_t log_level;       // Log level
     } config;
 
-    // 런타임 상태 (실행 중 변경되는 동적 상태)
+    // Runtime state (dynamic state that changes during execution)
     struct {
-        struct workload_listhead workloads; // 워크로드 리스트 (멀티 워크로드 지원)
-        uint32_t nr_workloads;              // 워크로드 수
-        volatile sig_atomic_t shutdown_requested; // 종료 요청 플래그
-        struct timespec starttimer_ts;  // 시작 타이머 타임스탬프
+        struct workload_listhead workloads; // Workload list (multi-workload support)
+        uint32_t nr_workloads;              // Number of workloads
+        volatile sig_atomic_t shutdown_requested; // Shutdown request flag
+        struct timespec starttimer_ts;  // Start timer timestamp
         struct apex_listhead apex_list; // Apex.OS Task List
     } runtime;
 
-    // 통신 관련 (D-Bus, 이벤트 루프)
+    // Communication (D-Bus, event loop)
     struct {
-        sd_event *event;                // systemd 이벤트 루프
-        sd_bus *dbus;                   // D-Bus 연결
+        sd_event *event;                // systemd event loop
+        sd_bus *dbus;                   // D-Bus connection
         int apex_fd;                    // Apex.OS Monitor Socket FD
     } comm;
 };
 
-// ===== TT 시스템 함수 선언 =====
-// 모듈별로 체계적으로 정리된 함수 인터페이스
+// ===== TT system function declarations =====
+// Systematically organized function interfaces by module
 
-// ===== 설정 관리 (config.c) =====
+// ===== Configuration management (config.c) =====
 tt_error_t parse_config(int argc, char *argv[], struct context *ctx);
 tt_error_t validate_config(const struct context *ctx);
 
-// ===== 코어 엔진 (core.c) =====
+// ===== Core engine (core.c) =====
 void timer_expired_handler(union sigval value);
 tt_error_t start_timers(struct context *ctx);
 tt_error_t epoll_loop(struct context *ctx);
 tt_error_t handle_sigwait_bpf_event(void *ctx, void *data, size_t len);
 tt_error_t handle_schedstat_bpf_event(void *ctx, void *data, size_t len);
 
-// ===== 하이퍼피리어드 관리 (hyperperiod.c) =====
+// ===== Hyperperiod management (hyperperiod.c) =====
 tt_error_t init_hyperperiod(struct context *ctx, const char *workload_id, uint64_t hyperperiod_us, struct hyperperiod_manager *hp_mgr);
 void hyperperiod_cycle_handler(union sigval value);
 uint64_t get_hyperperiod_relative_time(const struct hyperperiod_manager *hp_mgr);
 void log_hyperperiod_statistics(const struct hyperperiod_manager *hp_mgr);
 tt_error_t start_hyperperiod_timer(struct workload *wl);
 
-// ===== 태스크 관리 (task.c) =====
+// ===== Task management (task.c) =====
 tt_error_t init_task_list(struct workload *wl);
 void destroy_task_info_list(struct task_info *tasks);
 
-// ===== 네트워크 통신 (trpc.c) =====
+// ===== Network communication (trpc.c) =====
 tt_error_t init_trpc(struct context *ctx);
 tt_error_t sync_timer_with_server(struct context *ctx);
 tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struct sched_info *sinfo, struct hyperperiod_manager *hp_mgr);
 tt_error_t deserialize_workloads(struct context *ctx, serial_buf_t *sbuf);
 tt_error_t report_deadline_miss(struct context *ctx, const char *taskname);
 
-// ===== 시그널 처리 (signal.c) =====
+// ===== Signal handling (signal.c) =====
 tt_error_t setup_signal_handlers(struct context *ctx);
 
-// ===== 리소스 정리 (cleanup.c) =====
+// ===== Resource cleanup (cleanup.c) =====
 void cleanup_context(struct context *ctx);
 
-// ===== 유틸리티 함수들 =====
+// ===== Utility functions =====
 tt_error_t calibrate_bpf_time_offset(void);
 
 // ====== Apex.OS Monitor (apex_monitor.c) =====

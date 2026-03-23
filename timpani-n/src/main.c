@@ -14,25 +14,25 @@ int main(int argc, char *argv[])
     struct context ctx;
     tt_error_t ret;
 
-    // 구조체 명시적 초기화
+    // Explicit struct initialization
     memset(&ctx, 0, sizeof(ctx));
     LIST_INIT(&ctx.runtime.workloads);
 
-    // 설정 파싱
+    // Parse configuration
     ret = parse_config(argc, argv, &ctx);
     if (ret != TT_SUCCESS) {
         TT_LOG_ERROR("Configuration error: %s", tt_error_string(ret));
         return EXIT_FAILURE;
     }
 
-    // 초기화
+    // Initialize
     ret = initialize(&ctx);
     if (ret != TT_SUCCESS) {
         TT_LOG_ERROR("Initialization failed: %s", tt_error_string(ret));
         goto cleanup;
     }
 
-    // 실행
+    // Run
     ret = run(&ctx);
     if (ret != TT_SUCCESS) {
         TT_LOG_ERROR("Runtime error: %s", tt_error_string(ret));
@@ -47,12 +47,12 @@ static tt_error_t initialize(struct context *ctx)
 {
     pid_t pid = getpid();
 
-    // 시그널 핸들러 설정
+    // Set up signal handlers
     if (setup_signal_handlers(ctx) != TT_SUCCESS) {
         return TT_ERROR_SIGNAL;
     }
 
-    // 프로세스 우선순위 설정
+    // Set process priority
     if (ctx->config.cpu != -1) {
         ttsched_error_t affinity_result = set_affinity(pid, ctx->config.cpu);
         if (affinity_result != TTSCHED_SUCCESS) {
@@ -68,23 +68,23 @@ static tt_error_t initialize(struct context *ctx)
         }
     }
 
-    // BPF 초기화
+    // Initialize BPF
     if (calibrate_bpf_time_offset() != TT_SUCCESS) {
         TT_LOG_ERROR("Failed to calibrate BPF time offset");
         return TT_ERROR_BPF;
     }
 
-    // TRPC 초기화 및 스케줄 정보 획득
+    // Initialize TRPC and acquire schedule info
     if (init_trpc(ctx) != TT_SUCCESS) {
         TT_LOG_ERROR("Failed to initialize TRPC and get schedule info");
         return TT_ERROR_NETWORK;
     }
 
     if (!ctx->config.enable_apex) {
-        // BPF 활성화 (PID-based, workload-agnostic)
+        // Activate BPF (PID-based, workload-agnostic)
         bpf_on(handle_sigwait_bpf_event, handle_schedstat_bpf_event, (void *)ctx);
 
-        // 각 워크로드의 태스크 리스트 초기화
+        // Initialize task list for each workload
         struct workload *wl;
         bool has_apex_workload = false;
         int total_tasks = 0;
@@ -121,19 +121,19 @@ static tt_error_t initialize(struct context *ctx)
 
 static tt_error_t run(struct context *ctx)
 {
-    // 타이머 동기화
+    // Synchronize timers
     if (sync_timer_with_server(ctx) != TT_SUCCESS) {
         TT_LOG_ERROR("Failed to synchronize timers");
         return TT_ERROR_NETWORK;
     }
 
-    // 태스크 타이머 시작
+    // Start task timers
     if (start_timers(ctx) != TT_SUCCESS) {
         TT_LOG_ERROR("Failed to start timers");
         return TT_ERROR_TIMER;
     }
 
-    // 각 워크로드의 하이퍼피리어드 타이머 시작
+    // Start hyperperiod timer for each workload
     struct workload *wl;
     LIST_FOREACH(wl, &ctx->runtime.workloads, entry) {
         if (start_hyperperiod_timer(wl) != TT_SUCCESS) {
@@ -143,7 +143,7 @@ static tt_error_t run(struct context *ctx)
         }
     }
 
-    // 메인 이벤트 루프
+    // Main event loop
     tt_error_t result = epoll_loop(ctx);
 
     TT_LOG_INFO("Shutdown requested, cleaning up resources...");

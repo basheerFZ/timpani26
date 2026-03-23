@@ -7,7 +7,7 @@
 
 #include "internal.h"
 
-// BPF 콜백 함수들
+// BPF callback functions
 #ifdef CONFIG_TRACE_BPF
 static uint64_t bpf_ktime_off;
 
@@ -17,7 +17,7 @@ static tt_error_t calibrate_bpf_ktime_offset_internal(void)
     struct timespec t1, t2, t3;
     uint64_t best_delta = UINT64_MAX, delta, ts;
 
-    // 더 정확한 보정을 위해 반복 횟수 증가
+    // Increase iteration count for more accurate calibration
     for (i = 0; i < 20; i++) {
         if (clock_gettime(CLOCK_REALTIME, &t1) < 0) {
             TT_LOG_ERROR("Failed to get CLOCK_REALTIME");
@@ -50,7 +50,7 @@ static inline uint64_t bpf_ktime_to_real(uint64_t bpf_ts)
 
 tt_error_t handle_sigwait_bpf_event(void *ctx, void *data, size_t len)
 {
-    // 매개변수 검증
+    // Validate parameters
     if (!ctx || !data || len < sizeof(struct sigwait_event)) {
         return TT_ERROR_BPF;
     }
@@ -87,7 +87,7 @@ static void write_schedstat(struct context *ctx, struct schedstat_event *e, cons
 	static FILE *file;
 	uint64_t ts_wakeup, ts_start, ts_stop;
 
-	/* 플롯 기능이 비활성화된 경우 */
+	/* Plot feature is disabled */
 	if (!ctx->config.enable_plot) {
 		if (file) {
 			fclose(file);
@@ -127,7 +127,7 @@ static void write_schedstat(struct context *ctx, struct schedstat_event *e, cons
 
 tt_error_t handle_schedstat_bpf_event(void *ctx, void *data, size_t len)
 {
-    // 매개변수 검증
+    // Validate parameters
     if (!ctx || !data || len == 0) {
         return TT_ERROR_BPF;
     }
@@ -170,18 +170,18 @@ tt_error_t calibrate_bpf_time_offset(void)
     return calibrate_bpf_ktime_offset_internal();
 }
 
-// 타이머 핸들러 함수
+// Timer handler function
 void timer_expired_handler(union sigval value)
 {
     struct time_trigger *tt_node = (struct time_trigger *)value.sival_ptr;
 
-    // 매개변수 검증
+    // Validate parameters
     if (!tt_node || !tt_node->ctx) {
         return;
     }
 
     struct task_info *task = (struct task_info *)&tt_node->task;
-    struct context *ctx = tt_node->ctx;  // context 가져오기
+    struct context *ctx = tt_node->ctx;  // get context
     struct timespec before, after;
     uint64_t hyperperiod_position_us;
 

@@ -6,14 +6,14 @@
 #include "internal.h"
 #include <unistd.h>
 
-// 기본값 설정
+// Set default values
 static void config_set_defaults(struct context *ctx)
 {
     if (!ctx) {
         return;
     }
 
-    // 런타임 상태 명시적 초기화
+    // Explicit runtime state initialization
     ctx->runtime.shutdown_requested = 0;
     LIST_INIT(&ctx->runtime.workloads);
     ctx->runtime.nr_workloads = 0;
@@ -24,7 +24,7 @@ static void config_set_defaults(struct context *ctx)
     ctx->config.port = 7777;
     ctx->config.addr = "127.0.0.1";
 
-    // 기본값으로 hostname 사용, 실패시 "1"
+    // Use hostname as default, fall back to "1" on failure
     if (gethostname(ctx->config.node_id, sizeof(ctx->config.node_id)) != 0) {
         strncpy(ctx->config.node_id, "1", sizeof(ctx->config.node_id) - 1);
     }
@@ -33,7 +33,7 @@ static void config_set_defaults(struct context *ctx)
     ctx->config.enable_plot = false;
     ctx->config.enable_apex = false;
     ctx->config.clockid = CLOCK_REALTIME;
-    ctx->config.log_level = TT_LOG_LEVEL_INFO;  // 기본 로그 레벨
+    ctx->config.log_level = TT_LOG_LEVEL_INFO;  // default log level
 }
 
 static void print_usage(const char *program_name)
@@ -100,37 +100,37 @@ tt_error_t parse_config(int argc, char *argv[], struct context *ctx)
 
 tt_error_t validate_config(const struct context *ctx)
 {
-    // 우선순위 검증
+    // Validate priority
     if (ctx->config.prio < -1 || ctx->config.prio > 99) {
         TT_LOG_ERROR("Invalid priority: %d (must be -1 or 1-99)", ctx->config.prio);
         return TT_ERROR_CONFIG;
     }
 
-    // 포트 검증
+    // Validate port
     if (ctx->config.port <= 0 || ctx->config.port > 65535) {
         TT_LOG_ERROR("Invalid port: %d (must be 1-65535)", ctx->config.port);
         return TT_ERROR_CONFIG;
     }
 
-    // CPU 검증 (간단한 범위 체크)
+    // Validate CPU (simple range check)
     if (ctx->config.cpu < -1 || ctx->config.cpu > 1024) {
         TT_LOG_ERROR("Invalid CPU number: %d", ctx->config.cpu);
         return TT_ERROR_CONFIG;
     }
 
-    // 노드 ID 검증
+    // Validate node ID
     if (strlen(ctx->config.node_id) == 0) {
         TT_LOG_ERROR("Node ID cannot be empty");
         return TT_ERROR_CONFIG;
     }
 
-    // 로그 레벨 검증 및 설정
+    // Validate and set log level
     if (ctx->config.log_level < TT_LOG_LEVEL_SILENT || ctx->config.log_level > TT_LOG_LEVEL_VERBOSE) {
         TT_LOG_ERROR("Invalid log level: %d (must be 0-5)", ctx->config.log_level);
         return TT_ERROR_CONFIG;
     }
 
-    // 전역 로그 레벨 설정
+    // Set global log level
     tt_set_log_level(ctx->config.log_level);
 
     TT_LOG_INFO("Configuration:");

@@ -23,8 +23,8 @@ static struct time_trigger *task_create_node(struct task_info *ti, struct worklo
     }
 
     memcpy(&tt_node->task, ti, sizeof(tt_node->task));
-    tt_node->ctx = wl->ctx;       // context 포인터 설정
-    tt_node->workload = wl;       // 소속 워크로드 포인터 설정
+    tt_node->ctx = wl->ctx;       // set context pointer
+    tt_node->workload = wl;       // set owning workload pointer
     return tt_node;
 }
 

@@ -123,7 +123,7 @@ tt_error_t deserialize_sched_info(struct context *ctx, serial_buf_t *sbuf, struc
     TT_LOG_INFO("Workload: %s", sinfo->workload_id);
     TT_LOG_INFO("Hyperperiod: %lu us", hyperperiod_us);
 
-    // 워크로드의 hp_manager에 초기화
+    // Initialize workload's hp_manager
     if (init_hyperperiod(ctx, sinfo->workload_id, hyperperiod_us, hp_mgr) != TT_SUCCESS) {
         TT_LOG_ERROR("Failed to initialize hyperperiod manager");
         destroy_task_info_list(sinfo->tasks);

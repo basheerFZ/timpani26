@@ -34,7 +34,7 @@ static void cleanup_workloads(struct context *ctx)
         wl = LIST_FIRST(&ctx->runtime.workloads);
 
         if (!wl) {
-            break;  // 안전장치
+            break;  // safety guard
         }
 
         TT_LOG_INFO("Cleaning up workload: %s", wl->sched_info.workload_id);
@@ -48,33 +48,33 @@ static void cleanup_workloads(struct context *ctx)
                 break;
             }
 
-            // BPF에서 PID 제거
+            // Remove PID from BPF
             bpf_del_pid(tt_p->task.pid);
 
-            // pidfd 닫기
+            // Close pidfd
             if (tt_p->task.pidfd >= 0) {
                 close(tt_p->task.pidfd);
             }
 
-            // 타이머 삭제
+            // Delete timer
             timer_delete(tt_p->timer);
 
-            // 리스트에서 제거 및 메모리 해제
+            // Remove from list and free memory
             LIST_REMOVE(tt_p, entry);
             TT_FREE(tt_p);
         }
 
-        // 스케줄 정보의 태스크 리스트 정리
+        // Clean up task list from schedule info
         destroy_task_info_list(wl->sched_info.tasks);
         wl->sched_info.tasks = NULL;
 
-        // 하이퍼피리어드 타이머 정리
+        // Clean up hyperperiod timer
         if (wl->hp_manager.hyperperiod_us > 0) {
             timer_delete(wl->hp_manager.hyperperiod_timer);
             log_hyperperiod_statistics(&wl->hp_manager);
         }
 
-        // 워크로드 리스트에서 제거 및 메모리 해제
+        // Remove from workload list and free memory
         LIST_REMOVE(wl, entry);
         TT_FREE(wl);
     }

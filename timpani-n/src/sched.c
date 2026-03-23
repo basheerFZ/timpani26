@@ -129,7 +129,7 @@ static int set_sched_attr_syscall(pid_t pid, const struct sched_attr_tt *attr,
 ttsched_error_t set_schedattr(pid_t pid, unsigned int priority, unsigned int policy) {
 	struct sched_attr_tt attr;
 
-	// 입력 인자 검증
+	// Validate input arguments
 	if (priority > 99) {
 		TT_LOG_ERROR("Invalid priority %u (must be <= 99)", priority);
 		return TTSCHED_ERROR_INVALID_ARGS;
@@ -196,7 +196,7 @@ static void get_thread_name(pid_t pid, pid_t tid, char *name, size_t len)
 	}
 
 	if (fgets(name, len, file) == NULL) {
-		name[0] = '\0';  // 실패 시 빈 문자열
+		name[0] = '\0';  // empty string on failure
 	}
 	fclose(file);
 
