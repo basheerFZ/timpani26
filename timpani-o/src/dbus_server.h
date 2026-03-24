@@ -71,6 +71,10 @@ class DBusServer
     std::mutex sched_info_buf_mutex_;
     // Map to track synchronization status of each node for SyncCallback
     std::unordered_map<std::string, bool> node_sync_map_;
+    // Universal sync timestamp shared across all nodes in SyncCallback
+    struct timespec sync_ts_;
+    // Mutex to protect sync_ts_ access
+    std::mutex sync_ts_mutex_;
 };
 
 #endif  // DBUS_SERVER_H

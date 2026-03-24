@@ -22,7 +22,8 @@ DBusServer::DBusServer()
       server_fd_(-1),
       running_(false),
       sched_info_server_(nullptr),
-      sched_info_buf_(nullptr)
+      sched_info_buf_(nullptr),
+      sync_ts_{0, 0}
 {
 }
 
@@ -337,10 +338,21 @@ void DBusServer::SyncCallback(const char* name, int* ack, struct timespec* ts)
         if (ack) {
             *ack = 1;  // Acknowledge synchronization
         }
-        if (ts) {
-            // Set the sync timestamp to current time + 1 second
-            clock_gettime(CLOCK_REALTIME, ts);
-            ts->tv_sec += 1;
+
+        {
+            std::lock_guard<std::mutex> lock(instance.sync_ts_mutex_);
+            // Compute the sync timestamp once when all nodes are ready
+            if (instance.sync_ts_.tv_sec == 0 && instance.sync_ts_.tv_nsec == 0) {
+                clock_gettime(CLOCK_REALTIME, &instance.sync_ts_);
+                instance.sync_ts_.tv_sec += 1;
+                TLOG_DEBUG("Computed sync timestamp: ",
+                           instance.sync_ts_.tv_sec, " sec ",
+                           instance.sync_ts_.tv_nsec, " nsec");
+            }
+            // Return the same sync timestamp to all nodes
+            if (ts) {
+                *ts = instance.sync_ts_;
+            }
         }
     } else {
         if (ack) {
