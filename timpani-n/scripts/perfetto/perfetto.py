@@ -12,7 +12,8 @@ import argparse
 
 def create_trace_event(start, end, name, resource=None, per_cpu=False):
     is_wakeup = name.endswith("_wakeup")
-    base_name = name.replace("_wakeup", "") if is_wakeup else name
+    is_preempt = name.endswith("_preempt")
+    base_name = name.replace("_wakeup", "").replace("_preempt", "") if (is_wakeup or is_preempt) else name
 
     # Parse CPU core information from resource (e.g., "node01-C2" -> "CPU 2")
     cpu_core = "Unknown"
@@ -34,8 +35,18 @@ def create_trace_event(start, end, name, resource=None, per_cpu=False):
             pid = "Tasks"
         tid = base_name
 
+    if is_wakeup:
+        event_name = "Wakeup Latency"
+        event_type = "wakeup_latency"
+    elif is_preempt:
+        event_name = "Preemption Latency"
+        event_type = "preemption_latency"
+    else:
+        event_name = "Execution"
+        event_type = "execution"
+
     return {
-        "name": "Wakeup Latency" if is_wakeup else "Execution",
+        "name": event_name,
         "cat": "Task Scheduling",
         "ph": "X", # 'X' indicates a complete event
         "ts": start, # Start time (already in us unit for Chrome JSON)
@@ -49,7 +60,7 @@ def create_trace_event(start, end, name, resource=None, per_cpu=False):
             "start_time": start,
             "end_time": end,
             "duration_us": end - start,
-            "type": "wakeup_latency" if is_wakeup else "execution"
+            "type": event_type
         }  # Additional arguments
     }
 
@@ -84,8 +95,10 @@ def save_trace_to_file(trace_json, filename):
     with open(filename, 'w') as f:
         json.dump(trace_json, f, indent=2)
 
-def read_events_from_file(filename, include_wakeup=False):
+def read_events_from_file(filename, include_wakeup=False, include_preempt=False):
     events = []
+    last_wakeup = {}  # Track last wakeup_time per task name
+    last_stop = {} # Track last stop_time per task name
     with open(filename, 'r') as f:
         for line in f:
             parts = line.strip().split()
@@ -99,11 +112,21 @@ def read_events_from_file(filename, include_wakeup=False):
                     start_time = int(parts[6])   # Already in microseconds
                     stop_time = int(parts[7])    # Already in microseconds
 
-                    events.append((start_time, stop_time, name, resource))
+                    # If wakeup_time matches the previous occurrence of this task,
+                    # treat it as a preemption (resumed after being preempted)
+                    is_preempt = (name in last_wakeup and last_wakeup[name] == wakeup_time)
 
-                    # Optionally include wakeup latency as a separate event
-                    if include_wakeup and wakeup_time < start_time:
-                        events.append((wakeup_time, start_time, f"{name}_wakeup", resource))
+                    if is_preempt:
+                        events.append((start_time, stop_time, name, resource))
+                        events.append((last_stop[name], start_time, f"{name}_preempt", resource))
+                    else:
+                        events.append((start_time, stop_time, name, resource))
+                        # Only include wakeup latency for non-preemption events
+                        if include_wakeup and wakeup_time < start_time:
+                            events.append((wakeup_time, start_time, f"{name}_wakeup", resource))
+
+                    last_wakeup[name] = wakeup_time
+                    last_stop[name] = stop_time
 
                 except (ValueError, IndexError):
                     # Skip lines that don't have valid numeric data
@@ -124,7 +147,7 @@ if __name__ == "__main__":
 
     for input_file in args.input:
         print(f"Processing input file: {input_file}")
-        all_events += read_events_from_file(input_file, include_wakeup=True)
+        all_events += read_events_from_file(input_file, include_wakeup=True, include_preempt=True)
 
     print(f"Generating Chrome JSON trace file: {output_file}")
     generate_combined_trace_file(all_events, output_file)
