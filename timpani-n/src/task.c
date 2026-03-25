@@ -102,12 +102,6 @@ tt_error_t init_task_list(struct workload *wl)
 
     wl->nr_active_tasks = success_count;
 
-    if (success_count == 0) {
-        TT_LOG_ERROR("No tasks were successfully initialized for workload %s",
-            wl->sched_info.workload_id);
-        return TT_ERROR_CONFIG;
-    }
-
     TT_LOG_INFO("Successfully initialized %d tasks for workload %s",
         success_count, wl->sched_info.workload_id);
     return TT_SUCCESS;
