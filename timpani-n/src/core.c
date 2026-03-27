@@ -203,6 +203,7 @@ void timer_expired_handler(union sigval value)
     /* Check whether there is a deadline miss or not */
     if (tt_node->sigwait_ts) {
         uint64_t deadline_ns = ts_ns(before);
+        int64_t deadline_diff_ns = (int64_t)tt_node->sigwait_ts - (int64_t)deadline_ns;
 
         // Check if this task is still running
         if (!tt_node->sigwait_enter) {
@@ -214,11 +215,11 @@ void timer_expired_handler(union sigval value)
                 TT_LOG_WARNING("Failed to report deadline miss for task %s", task->name);
             }
         // Check if this task meets the deadline
-        } else if (tt_node->sigwait_ts > deadline_ns) {
+        } else if (deadline_diff_ns > 0) {
             TT_LOG_ERROR("!!! DEADLINE MISS %s(%d): %lu > deadline %lu !!!",
                 task->name, task->pid, tt_node->sigwait_ts, deadline_ns);
-            TT_LOG_ERROR("%s: Deadline miss: %lu diff",
-                task->name, tt_node->sigwait_ts - deadline_ns);
+            TT_LOG_ERROR("%s: Deadline miss: %lld ns diff",
+                task->name, (long long)deadline_diff_ns);
             tt_node->workload->hp_manager.total_deadline_misses++;
             tt_node->workload->hp_manager.cycle_deadline_misses++;
             if (report_deadline_miss(ctx, task->name) != TT_SUCCESS) {
