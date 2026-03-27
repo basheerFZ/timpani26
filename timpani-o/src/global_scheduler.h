@@ -67,7 +67,20 @@ public:
      */
     void clear();
 
+    /**
+     * @brief Pre-load CPU utilization from previously scheduled workloads
+     *
+     * Call this after clear() and before schedule() so that the scheduler
+     * accounts for resources already committed to other workloads.
+     *
+     * @param existing_schedules Node schedule info maps from other workloads
+     */
+    void preload_utilization(const std::vector<NodeSchedInfoMap>& existing_schedules);
+
 private:
+    // Apply pre-loaded utilization (called from within schedule())
+    void apply_preloaded_utilization();
+
     // Node configuration manager
     std::shared_ptr<NodeConfigManager> node_config_manager_;
 
@@ -79,6 +92,9 @@ private:
 
     // Tasks to be scheduled
     std::vector<Task> tasks_;
+
+    // Pre-loaded schedules from other workloads (applied during schedule())
+    std::vector<NodeSchedInfoMap> preloaded_schedules_;
 
     // Final schedule map (node_id -> sched_info_t)
     NodeSchedInfoMap sched_info_map_;

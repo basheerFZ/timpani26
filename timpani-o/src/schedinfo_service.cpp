@@ -3,8 +3,50 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <cstring>
+
 #include "tlog.h"
 #include "schedinfo_service.h"
+
+// Helper to free task memory in a NodeSchedInfoMap
+static void FreeNodeSchedInfoMap(NodeSchedInfoMap& map)
+{
+    for (auto& entry : map) {
+        if (entry.second.tasks) {
+            free(entry.second.tasks);
+            entry.second.tasks = nullptr;
+        }
+        entry.second.num_tasks = 0;
+    }
+    map.clear();
+}
+
+// Helper to deep copy a NodeSchedInfoMap (allocates new task arrays)
+static NodeSchedInfoMap DeepCopyNodeSchedInfoMap(const NodeSchedInfoMap& src)
+{
+    NodeSchedInfoMap dst;
+    for (const auto& entry : src) {
+        const std::string& node_id = entry.first;
+        const sched_info_t& src_info = entry.second;
+
+        sched_info_t& dst_info = dst[node_id];
+        dst_info.num_tasks = src_info.num_tasks;
+        if (src_info.num_tasks > 0 && src_info.tasks) {
+            dst_info.tasks = static_cast<sched_task_t*>(
+                malloc(sizeof(sched_task_t) * src_info.num_tasks));
+            if (!dst_info.tasks) {
+                TLOG_ERROR("Memory allocation failed for node '", node_id, "'");
+                FreeNodeSchedInfoMap(dst);
+                return {};
+            }
+            memcpy(dst_info.tasks, src_info.tasks,
+                   sizeof(sched_task_t) * src_info.num_tasks);
+        } else {
+            dst_info.tasks = nullptr;
+        }
+    }
+    return dst;
+}
 
 SchedInfoServiceImpl::SchedInfoServiceImpl(std::shared_ptr<NodeConfigManager> node_config_manager)
     : node_config_manager_(node_config_manager),
@@ -23,6 +65,15 @@ SchedInfoServiceImpl::SchedInfoServiceImpl(std::shared_ptr<NodeConfigManager> no
     } else {
         TLOG_INFO("Using default node configuration");
     }
+}
+
+SchedInfoServiceImpl::~SchedInfoServiceImpl()
+{
+    std::unique_lock<std::shared_mutex> lock(sched_info_mutex_);
+    for (auto& entry : sched_info_map_) {
+        FreeNodeSchedInfoMap(entry.second);
+    }
+    sched_info_map_.clear();
 }
 
 Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
@@ -50,31 +101,13 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
 
     std::unique_lock<std::shared_mutex> lock(sched_info_mutex_);
 
-    // Currently only supports one workload at a time
-    // Clear previous workload if exists to support workload replacement
-    if (!sched_info_map_.empty()) {
-        std::string prev_workload = sched_info_map_.begin()->first;
-        TLOG_WARN("Replacing existing workload '", prev_workload, "' with new workload '", request->workload_id(), "'");
-
-        // Clean up Apex.OS allocated memory for scheduling info
-        const std::string& workload_id = sched_info_map_.begin()->first;
-        if (workload_id == "Apex.OS") {
-            auto& node_sched_map = sched_info_map_.begin()->second;
-            for (const auto& node_entry : node_sched_map) {
-                const sched_info_t& sched_info = node_entry.second;
-                if (sched_info.tasks != nullptr) {
-                    free(sched_info.tasks);
-                }
-            }
-            node_sched_map.clear();
-        }
-        // Clear existing scheduling info
-        sched_info_map_.clear();
-        // Clear global scheduler state when replacing workload
-        global_scheduler_->clear();
-        // Clear hyperperiod information for previous workload
-        hyperperiod_manager_->ClearWorkload(prev_workload);
-
+    // If this workload already exists, replace only that workload
+    auto existing_it = sched_info_map_.find(request->workload_id());
+    if (existing_it != sched_info_map_.end()) {
+        TLOG_INFO("Replacing existing workload '", request->workload_id(), "'");
+        FreeNodeSchedInfoMap(existing_it->second);
+        sched_info_map_.erase(existing_it);
+        hyperperiod_manager_->ClearWorkload(request->workload_id());
         sched_info_changed_ = true;
     }
 
@@ -121,9 +154,12 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
             }
         }
 
-        // Store in our sched_info_map_ (copy the results)
+        // Store in our sched_info_map_ (service owns the memory)
         sched_info_map_[request->workload_id()] = node_sched_map;
+        sched_info_changed_ = true;
 
+        TLOG_INFO("Successfully stored Apex.OS workload '", request->workload_id(),
+                  "' (", sched_info_map_.size(), " total workload(s))");
         reply->set_status(0);  // Success
         return Status::OK;
     }
@@ -142,6 +178,16 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
     // Use GlobalScheduler to process tasks
     global_scheduler_->clear();
     global_scheduler_->set_tasks(tasks);
+
+    // Pre-load CPU utilization from existing workloads for resource awareness
+    if (!sched_info_map_.empty()) {
+        std::vector<NodeSchedInfoMap> existing_schedules;
+        existing_schedules.reserve(sched_info_map_.size());
+        for (const auto& entry : sched_info_map_) {
+            existing_schedules.push_back(entry.second);
+        }
+        global_scheduler_->preload_utilization(existing_schedules);
+    }
 
     // Validate workload distribution across nodes
     std::map<std::string, int> node_task_counts;
@@ -175,12 +221,13 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
         TLOG_INFO("  Node '", node_id, "': ", sched_info.num_tasks, " tasks");
     }
 
-    // Store in our sched_info_map_ (copy the results)
-    // sched_info_map_[workload_id] = NodeSchedInfoMap (node_id -> sched_info_t)
-    sched_info_map_[request->workload_id()] = node_sched_map;
+    // Deep copy scheduler results (service owns the memory independently)
+    sched_info_map_[request->workload_id()] = DeepCopyNodeSchedInfoMap(node_sched_map);
+    sched_info_changed_ = true;
 
     TLOG_INFO("Successfully scheduled ", global_scheduler_->get_total_scheduled_tasks(),
-            " tasks across ", node_sched_map.size(), " nodes");
+            " tasks across ", node_sched_map.size(), " nodes",
+            " (", sched_info_map_.size(), " total workload(s))");
     TLOG_INFO("Hyperperiod for workload '", request->workload_id(), "': ",
               hyperperiod, " us (", hyperperiod / 1000, " ms)");
     reply->set_status(0);  // Success

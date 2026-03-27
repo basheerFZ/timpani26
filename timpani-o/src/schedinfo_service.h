@@ -40,6 +40,7 @@ class SchedInfoServiceImpl final : public SchedInfoService::Service
 {
   public:
     explicit SchedInfoServiceImpl(std::shared_ptr<NodeConfigManager> node_config_manager = nullptr);
+    ~SchedInfoServiceImpl();
 
     Status AddSchedInfo(ServerContext* context, const SchedInfo* request,
                         Response* reply) override;

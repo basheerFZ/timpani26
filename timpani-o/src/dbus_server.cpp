@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <vector>
+
 #include "tlog.h"
 #include "dbus_server.h"
 #include "fault_client.h"
@@ -121,64 +123,84 @@ bool DBusServer::SerializeSchedInfo(const SchedInfoMap& map)
     // Return true if buffer is already allocated
     if (sched_info_buf_) return true;
 
-    // Currently only serialize the first workload in schedule info
-    // TODO: Support multiple workloads by selecting appropriate workload
-    const auto& node_sched_info = map.begin()->second;
-    const std::string& workload_id = map.begin()->first;
-
-    // Get hyperperiod information for this workload
     DBusServer& instance = GetInstance();
-    const HyperperiodInfo* hyperperiod_info = nullptr;
-    if (instance.sched_info_server_) {
-        hyperperiod_info = instance.sched_info_server_->GetHyperperiodInfo(workload_id);
-    }
 
-    // Allocate serial buffer and pack schedule info into it
-    sched_info_buf_ = new_serial_buf(1024 + 256); // Extra space for hyperperiod
+    // Allocate serial buffer for all workloads
+    sched_info_buf_ = new_serial_buf(1024 * map.size() + 256);
     if (!sched_info_buf_) {
         TLOG_ERROR("Failed to allocate memory for schedule info buffer");
         return false;
     }
 
-    // First serialize hyperperiod information if available
-    uint64_t hyperperiod_us = 0;
-    if (hyperperiod_info) {
-        hyperperiod_us = hyperperiod_info->hyperperiod_us;
-        TLOG_DEBUG("Including hyperperiod ", hyperperiod_us, " us for workload ", workload_id);
+    // libtrpc uses stack-based (LIFO) serialization: the last item serialized
+    // is the first item deserialized. The client (Timpani-N) deserializes
+    // nr_workloads first, then iterates workloads 0..N-1. So we must serialize
+    // workloads in reverse order, with nr_workloads at the very end.
+    //
+    // Wire format per workload (serialize order, reversed from deserialize):
+    //   hyperperiod_us, workload_id, [task fields...], nr_tasks
+    // Overall: [workload N-1] ... [workload 0] [nr_workloads]
+
+    // Collect workloads into a vector for reverse iteration
+    std::vector<SchedInfoMap::const_iterator> workload_iters;
+    for (auto it = map.cbegin(); it != map.cend(); ++it) {
+        workload_iters.push_back(it);
     }
-    serialize_int64_t(sched_info_buf_, hyperperiod_us);
-    serialize_str(sched_info_buf_, workload_id.substr(0, 64 - 1).c_str());
 
-    int nr_tasks = 0;
-    for (const auto& sinfo : node_sched_info) {
-        // Serialize each node's schedule info
-        const std::string& node_id = sinfo.first;
-        const sched_info_t& sched_info = sinfo.second;
+    // Serialize workloads in reverse order
+    for (auto rit = workload_iters.rbegin(); rit != workload_iters.rend(); ++rit) {
+        const std::string& workload_id = (*rit)->first;
+        const auto& node_sched_info = (*rit)->second;
 
-        // NOTE: This buffer format only works with Timpani-N v2.0
-        for (int i = 0; i < sched_info.num_tasks; i++) {
-            const sched_task_t& task = sched_info.tasks[i];
-            // Ensure reverse order from deserialization in Timpani-N
-            std::string task_name = task.task_name;
-            serialize_str(sched_info_buf_,
-                          task_name.substr(0, 16 - 1).c_str());
-            serialize_int32_t(sched_info_buf_, task.sched_priority);
-            serialize_int32_t(sched_info_buf_, task.sched_policy);
-            serialize_int32_t(sched_info_buf_, task.period_ns / kNsToUs);
-            serialize_int32_t(sched_info_buf_, task.release_time);
-            serialize_int32_t(sched_info_buf_, task.runtime_ns / kNsToUs);
-            serialize_int32_t(sched_info_buf_, task.deadline_ns / kNsToUs);
-            serialize_int64_t(sched_info_buf_, task.cpu_affinity);
-            serialize_int32_t(sched_info_buf_, task.max_dmiss);
-            std::string task_assigned_node = task.assigned_node;
-            serialize_str(sched_info_buf_,
-                        task_assigned_node.substr(0, 64 - 1).c_str());
+        // Get hyperperiod information for this workload
+        uint64_t hyperperiod_us = 0;
+        if (instance.sched_info_server_) {
+            const HyperperiodInfo* hp_info =
+                instance.sched_info_server_->GetHyperperiodInfo(workload_id);
+            if (hp_info) {
+                hyperperiod_us = hp_info->hyperperiod_us;
+            }
         }
-        nr_tasks += sched_info.num_tasks;
-    }
-    serialize_int32_t(sched_info_buf_, nr_tasks);
 
-    TLOG_DEBUG("Serialized sched_info_buf_: ", sched_info_buf_->pos, " bytes with hyperperiod ", hyperperiod_us, " us");
+        TLOG_DEBUG("Serializing workload '", workload_id,
+                   "' with hyperperiod ", hyperperiod_us, " us");
+
+        serialize_int64_t(sched_info_buf_, hyperperiod_us);
+        serialize_str(sched_info_buf_, workload_id.substr(0, 64 - 1).c_str());
+
+        int nr_tasks = 0;
+        for (const auto& sinfo : node_sched_info) {
+            const sched_info_t& sched_info = sinfo.second;
+
+            for (int i = 0; i < sched_info.num_tasks; i++) {
+                const sched_task_t& task = sched_info.tasks[i];
+                // Ensure reverse order from deserialization in Timpani-N
+                std::string task_name = task.task_name;
+                serialize_str(sched_info_buf_,
+                              task_name.substr(0, 16 - 1).c_str());
+                serialize_int32_t(sched_info_buf_, task.sched_priority);
+                serialize_int32_t(sched_info_buf_, task.sched_policy);
+                serialize_int32_t(sched_info_buf_, task.period_ns / kNsToUs);
+                serialize_int32_t(sched_info_buf_, task.release_time);
+                serialize_int32_t(sched_info_buf_, task.runtime_ns / kNsToUs);
+                serialize_int32_t(sched_info_buf_, task.deadline_ns / kNsToUs);
+                serialize_int64_t(sched_info_buf_, task.cpu_affinity);
+                serialize_int32_t(sched_info_buf_, task.max_dmiss);
+                std::string task_assigned_node = task.assigned_node;
+                serialize_str(sched_info_buf_,
+                            task_assigned_node.substr(0, 64 - 1).c_str());
+            }
+            nr_tasks += sched_info.num_tasks;
+        }
+        serialize_int32_t(sched_info_buf_, nr_tasks);
+    }
+
+    // Serialize workload count last (deserialized first by client)
+    int32_t nr_workloads = static_cast<int32_t>(map.size());
+    serialize_int32_t(sched_info_buf_, nr_workloads);
+
+    TLOG_DEBUG("Serialized ", nr_workloads, " workload(s), ",
+              sched_info_buf_->pos, " bytes total");
 
     return true;
 }
@@ -271,9 +293,6 @@ void DBusServer::DMissCallback(const char* name, const char* task)
 
             if (!found) {
                 TLOG_WARN("Could not find task '", task, "' on node '", name, "' in any workload");
-                // Currently only references the first workload as fallback
-                // TODO: Support workload selection based on task context
-                workload_id = map.begin()->first;
             }
         }
     }
@@ -292,23 +311,22 @@ void DBusServer::SyncCallback(const char* name, int* ack, struct timespec* ts)
 
     DBusServer& instance = GetInstance();
 
-    // If node sync map is empty, initialize it based on current schedule info
-    // Currently handles single workload, TODO: Support per-workload sync
+    // If node sync map is empty, initialize it with all unique nodes
+    // across all workloads
     if (instance.node_sync_map_.empty()) {
         if (instance.sched_info_server_) {
             auto map = instance.sched_info_server_->GetSchedInfoMap();
             if (!map.empty()) {
-                // Initialize sync map with all unique nodes from current workload
-                // Currently only initializes the first workload's nodes
-                // TODO: Support per-workload node synchronization
-                const auto& node_sched_info = map.begin()->second;
-                for (const auto& sinfo : node_sched_info) {
-                    const std::string& node_id = sinfo.first;
-                    instance.node_sync_map_[node_id] = false;
+                for (const auto& workload_entry : map) {
+                    const auto& node_sched_info = workload_entry.second;
+                    for (const auto& sinfo : node_sched_info) {
+                        const std::string& node_id = sinfo.first;
+                        instance.node_sync_map_[node_id] = false;
+                    }
                 }
                 TLOG_DEBUG("Created node sync map with ",
-                           instance.node_sync_map_.size(), " entries",
-                           " for workload: ", map.begin()->first);
+                           instance.node_sync_map_.size(),
+                           " entries from ", map.size(), " workload(s)");
             }
         }
     }

@@ -75,6 +75,9 @@ bool GlobalScheduler::schedule(const std::string& algorithm)
     initialize_available_cpus();
     initialize_cpu_utilization_tracking();
 
+    // Apply pre-loaded utilization from existing workloads (after zeroing)
+    apply_preloaded_utilization();
+
     TLOG_INFO("=== Starting GlobalScheduler with algorithm: ", algorithm, " ===");
     TLOG_INFO("Tasks to schedule: ", tasks_.size());
     TLOG_INFO("Available nodes: ", available_cpus_per_node_.size());
@@ -490,7 +493,44 @@ void GlobalScheduler::clear()
     tasks_.clear();
     available_cpus_per_node_.clear();
     cpu_utilization_per_node_.clear();
+    preloaded_schedules_.clear();
     TLOG_INFO("GlobalScheduler cleared");
+}
+
+void GlobalScheduler::preload_utilization(const std::vector<NodeSchedInfoMap>& existing_schedules)
+{
+    preloaded_schedules_ = existing_schedules;
+    TLOG_DEBUG("Registered ", existing_schedules.size(),
+              " existing workload(s) for utilization preload");
+}
+
+void GlobalScheduler::apply_preloaded_utilization()
+{
+    if (preloaded_schedules_.empty()) return;
+
+    for (const auto& node_sched_info : preloaded_schedules_) {
+        for (const auto& entry : node_sched_info) {
+            const std::string& node_id = entry.first;
+            const sched_info_t& sched_info = entry.second;
+
+            for (int i = 0; i < sched_info.num_tasks; i++) {
+                const sched_task_t& task = sched_info.tasks[i];
+                if (task.period_ns > 0) {
+                    double utilization =
+                        static_cast<double>(task.runtime_ns) / task.period_ns;
+                    int cpu_id = static_cast<int>(task.cpu_affinity);
+                    if (cpu_utilization_per_node_.count(node_id) &&
+                        cpu_utilization_per_node_[node_id].count(cpu_id)) {
+                        cpu_utilization_per_node_[node_id][cpu_id] += utilization;
+                    }
+                }
+            }
+        }
+    }
+
+    TLOG_DEBUG("Applied pre-loaded utilization from ", preloaded_schedules_.size(),
+              " existing workload(s)");
+    preloaded_schedules_.clear();
 }
 
 void GlobalScheduler::schedule_with_target_node_priority()

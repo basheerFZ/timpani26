@@ -135,7 +135,6 @@ int main(int argc, char **argv)
     std::shared_ptr<NodeConfigManager> node_config_manager = std::make_shared<NodeConfigManager>();
 
     if (!node_config_file.empty()) {
-        TLOG_INFO("Loading node configuration from: ", node_config_file);
         if (!node_config_manager->LoadFromFile(node_config_file)) {
             TLOG_ERROR("Failed to load node configuration, using default settings");
         }
