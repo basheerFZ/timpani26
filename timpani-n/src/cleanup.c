@@ -15,9 +15,16 @@ void cleanup_context(struct context *ctx)
 
     TT_LOG_INFO("Cleaning up resources...");
 
+    /*
+     * During the cleanup_workloads() process, the main thread frees all tasks 
+     * from memory with free(), and at the same time, the BPF thread reads new
+     * events from the ring buffer and accesses the freed memory (tt_p->task.name)
+     * to print logs, resulting in a "realloc(): invalid old size" error.
+     * Therefore, BPF cleanup must be performed first
+     */
+    cleanup_bpf_trace();
     cleanup_workloads(ctx);
     cleanup_communication(ctx);
-    cleanup_bpf_trace();
 
     TT_LOG_INFO("Time Trigger shutdown completed.");
 }

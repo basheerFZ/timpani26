@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <pthread.h>
 #include "internal.h"
 
 static int init_trpc_connection(const char *addr, int port, sd_bus **dbus_ret, sd_event **event_ret)
@@ -255,8 +256,12 @@ tt_error_t sync_timer_with_server(struct context *ctx)
     return TT_SUCCESS;
 }
 
+static pthread_mutex_t dmiss_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 tt_error_t report_deadline_miss(struct context *ctx, const char *taskname)
 {
+    pthread_mutex_lock(&dmiss_mutex);
     int result = trpc_client_dmiss(ctx->comm.dbus, ctx->config.node_id, taskname);
+    pthread_mutex_unlock(&dmiss_mutex);
     return (result < 0) ? TT_ERROR_NETWORK : TT_SUCCESS;
 }
