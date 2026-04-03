@@ -84,45 +84,45 @@ tt_error_t handle_sigwait_bpf_event(void *ctx, void *data, size_t len) { return 
 
 static void write_schedstat(struct context *ctx, struct schedstat_event *e, const char *tname)
 {
-	static FILE *file;
-	uint64_t ts_wakeup, ts_start, ts_stop;
+    static FILE *file;
+    uint64_t ts_wakeup, ts_start, ts_stop;
 
-	/* Plot feature is disabled */
-	if (!ctx->config.enable_plot) {
-		if (file) {
-			fclose(file);
-			file = NULL;
-		}
-		return;
-	}
+    /* Plot feature is disabled */
+    if (!ctx->config.enable_plot) {
+        if (file) {
+            fclose(file);
+            file = NULL;
+        }
+        return;
+    }
 
-	// Check if the file is not opened yet
-	if (!file) {
-		char fname[128];
+    // Check if the file is not opened yet
+    if (!file) {
+        char fname[128];
 
-		snprintf(fname, sizeof(fname), "%s.gpdata", ctx->config.node_id);
-		file = fopen(fname, "w+");
-		if (file == NULL) {
-			ctx->config.enable_plot = 0;
-			return;
-		}
-	}
+        snprintf(fname, sizeof(fname), "%s.gpdata", ctx->config.node_id);
+        file = fopen(fname, "w+");
+        if (file == NULL) {
+            ctx->config.enable_plot = 0;
+            return;
+        }
+    }
 
-	// Convert monotonic ktime to realtime
-	ts_wakeup = bpf_ktime_to_real(e->ts_wakeup);
-	ts_start = bpf_ktime_to_real(e->ts_start);
-	ts_stop = bpf_ktime_to_real(e->ts_stop);
+    // Convert monotonic ktime to realtime
+    ts_wakeup = bpf_ktime_to_real(e->ts_wakeup);
+    ts_start = bpf_ktime_to_real(e->ts_start);
+    ts_stop = bpf_ktime_to_real(e->ts_stop);
 
         // Convert ns timestamps to us timestamps in a round up manner
-	ts_wakeup = SCHEDSTAT_NS_TO_US(ts_wakeup);
-	ts_start = SCHEDSTAT_NS_TO_US(ts_start);
-	ts_stop = SCHEDSTAT_NS_TO_US(ts_stop);
+    ts_wakeup = SCHEDSTAT_NS_TO_US(ts_wakeup);
+    ts_start = SCHEDSTAT_NS_TO_US(ts_start);
+    ts_stop = SCHEDSTAT_NS_TO_US(ts_stop);
 
-	// Column formatting:
-	// task event ignored resource priority activate start stop ignored
-	// NOTE: Compatible with legacy gnuplot script
-	fprintf(file, "%-16s 0 0 %s-C%d 0 %lu %lu %lu 0\n",
-		tname, ctx->config.node_id, e->cpu, ts_wakeup, ts_start, ts_stop);
+    // Column formatting:
+    // task event ignored resource priority activate start stop ignored
+    // NOTE: Compatible with legacy gnuplot script
+    fprintf(file, "%-16s 0 0 %s-C%d 0 %lu %lu %lu 0\n",
+        tname, ctx->config.node_id, e->cpu, ts_wakeup, ts_start, ts_stop);
 }
 
 tt_error_t handle_schedstat_bpf_event(void *ctx, void *data, size_t len)
@@ -309,169 +309,169 @@ tt_error_t start_timers(struct context *ctx)
 
 tt_error_t handle_apex_fault_event(struct context *ctx, const char *name)
 {
-	struct timespec now;
-	uint64_t delta;
-	int pid;
-	uint64_t cpu_affinity;
-	struct apex_info *apex;
+    struct timespec now;
+    uint64_t delta;
+    int pid;
+    uint64_t cpu_affinity;
+    struct apex_info *apex;
 
-	LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
-		if (strncmp(apex->task.name, name, 15) != 0) {
-			continue;
-		}
+    LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
+        if (strncmp(apex->task.name, name, 15) != 0) {
+            continue;
+        }
 
-		if (apex->task.pid == 0) {
-			// PID is not registered yet, try to get it
-			if (get_pid_by_name(name, &apex->task.pid) != TT_SUCCESS) {
-				TT_LOG_ERROR("No PID for Apex.OS task %s", name);
-				return TT_ERROR_INVALID_ARGS;
-			}
-		}
+        if (apex->task.pid == 0) {
+            // PID is not registered yet, try to get it
+            if (get_pid_by_name(name, &apex->task.pid) != TT_SUCCESS) {
+                TT_LOG_ERROR("No PID for Apex.OS task %s", name);
+                return TT_ERROR_INVALID_ARGS;
+            }
+        }
 
-		clock_gettime(CLOCK_MONOTONIC, &now);
-		uint64_t now_us = tt_timespec_to_us(&now);
-        	uint64_t dmiss_time_us = atomic_load(&apex->dmiss_time_us);
-		delta = now_us - dmiss_time_us;
-		if (dmiss_time_us == 0 || delta > apex->task.period) {
-			atomic_store(&apex->dmiss_count, 1);
-			atomic_store(&apex->dmiss_time_us, now_us);
-		} else {
-			atomic_fetch_add(&apex->dmiss_count, 1);
-		}
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t now_us = tt_timespec_to_us(&now);
+        uint64_t dmiss_time_us = atomic_load(&apex->dmiss_time_us);
+        delta = now_us - dmiss_time_us;
+        if (dmiss_time_us == 0 || delta > apex->task.period) {
+            atomic_store(&apex->dmiss_count, 1);
+            atomic_store(&apex->dmiss_time_us, now_us);
+        } else {
+            atomic_fetch_add(&apex->dmiss_count, 1);
+        }
 
-		TT_LOG_INFO("Apex.OS Task %s deadline miss count: %d",
-			name, apex->dmiss_count);
+        TT_LOG_INFO("Apex.OS Task %s deadline miss count: %d",
+            name, apex->dmiss_count);
 
-		// Send fault info to coredata provider
-		coredata_client_send(apex);
+        // Send fault info to coredata provider
+        coredata_client_send(apex);
 
-		int dmiss_count = atomic_load(&apex->dmiss_count);
-		if (dmiss_count >= apex->task.allowable_deadline_misses) {
-			TT_LOG_INFO("!!! Apex.OS FAULT: %s - %d deadline misses in %llu seconds !!!",
-				name, dmiss_count, apex->task.period / USEC_PER_SEC);
-			if (report_deadline_miss(ctx, name) != TT_SUCCESS) {
-				TT_LOG_WARNING("Failed to report Apex.OS fault for %s", name);
-			}
+        int dmiss_count = atomic_load(&apex->dmiss_count);
+        if (dmiss_count >= apex->task.allowable_deadline_misses) {
+            TT_LOG_INFO("!!! Apex.OS FAULT: %s - %d deadline misses in %llu seconds !!!",
+                name, dmiss_count, apex->task.period / USEC_PER_SEC);
+            if (report_deadline_miss(ctx, name) != TT_SUCCESS) {
+                TT_LOG_WARNING("Failed to report Apex.OS fault for %s", name);
+            }
 
-			// Reset deadline miss counters
-			atomic_store(&apex->dmiss_count, 0);
-			atomic_store(&apex->dmiss_time_us, 0);
+            // Reset deadline miss counters
+            atomic_store(&apex->dmiss_count, 0);
+            atomic_store(&apex->dmiss_time_us, 0);
 
-			// Change CPU affinity to recover from the fault
-			cpu_affinity = (apex->task.cpu_affinity & 0xFFFFFFFF00000000) >> 32;
-			if (set_affinity_cpumask_all_threads(apex->task.pid, cpu_affinity) != TT_SUCCESS) {
-				TT_LOG_ERROR("Failed to set CPU affinity for task %s (%d)",
-					name, apex->task.pid);
-				return TT_ERROR_PERMISSION;
-			}
-		}
+            // Change CPU affinity to recover from the fault
+            cpu_affinity = (apex->task.cpu_affinity & 0xFFFFFFFF00000000) >> 32;
+            if (set_affinity_cpumask_all_threads(apex->task.pid, cpu_affinity) != TT_SUCCESS) {
+                TT_LOG_ERROR("Failed to set CPU affinity for task %s (%d)",
+                    name, apex->task.pid);
+                return TT_ERROR_PERMISSION;
+            }
+        }
 
-		return TT_SUCCESS;
-	}
+        return TT_SUCCESS;
+    }
 
-	return TT_ERROR_INVALID_ARGS;
+    return TT_ERROR_INVALID_ARGS;
 }
 
 tt_error_t handle_apex_up_event(struct context *ctx, const char *name, int nspid)
 {
-	int pid;
-	uint64_t cpu_affinity;
-	struct apex_info *apex;
+    int pid;
+    uint64_t cpu_affinity;
+    struct apex_info *apex;
 
-	if (get_pid_by_nspid(name, nspid, &pid) != TTSCHED_SUCCESS) {
-		pid = nspid;
-	}
+    if (get_pid_by_nspid(name, nspid, &pid) != TTSCHED_SUCCESS) {
+        pid = nspid;
+    }
 
-	TT_LOG_INFO("Apex.OS UP: name=%s, pid=%d, nspid=%d", name, pid, nspid);
-	LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
-		if (strncmp(apex->task.name, name, 15) == 0) {
-			apex->task.pid = pid;
-			apex->nspid = nspid;
-			strncpy(apex->name, name, MAX_APEX_NAME_LEN - 1);
-			apex->name[MAX_APEX_NAME_LEN - 1] = '\0';
+    TT_LOG_INFO("Apex.OS UP: name=%s, pid=%d, nspid=%d", name, pid, nspid);
+    LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
+        if (strncmp(apex->task.name, name, 15) == 0) {
+            apex->task.pid = pid;
+            apex->nspid = nspid;
+            strncpy(apex->name, name, MAX_APEX_NAME_LEN - 1);
+            apex->name[MAX_APEX_NAME_LEN - 1] = '\0';
 
-			// Set CPU affinity for the whole process
-			cpu_affinity = apex->task.cpu_affinity & 0xFFFFFFFF;
-			if (set_affinity_cpumask_all_threads(pid, cpu_affinity) != TT_SUCCESS) {
-				TT_LOG_ERROR("Failed to set CPU affinity for task %s (%d)",
-					name, pid);
-				return TT_ERROR_PERMISSION;
-			}
+            // Set CPU affinity for the whole process
+            cpu_affinity = apex->task.cpu_affinity & 0xFFFFFFFF;
+            if (set_affinity_cpumask_all_threads(pid, cpu_affinity) != TT_SUCCESS) {
+                TT_LOG_ERROR("Failed to set CPU affinity for task %s (%d)",
+                    name, pid);
+                return TT_ERROR_PERMISSION;
+            }
 
-			// Create coredata timer
-			coredata_create_timer(apex);
-			return TT_SUCCESS;
-		}
-	}
-	return TT_ERROR_INVALID_ARGS;
+            // Create coredata timer
+            coredata_create_timer(apex);
+            return TT_SUCCESS;
+        }
+    }
+    return TT_ERROR_INVALID_ARGS;
 }
 
 tt_error_t handle_apex_down_event(struct context *ctx, int nspid)
 {
-	struct apex_info *apex;
+    struct apex_info *apex;
 
-	TT_LOG_INFO("Apex.OS DOWN: nspid=%d", nspid);
-	LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
-		if (apex->nspid == nspid) {
-			coredata_delete_timer(apex); // Delete coredata timer
-			apex->task.pid = 0;
-			apex->nspid = 0;
-			return TT_SUCCESS;
-		}
-	}
-	return TT_ERROR_INVALID_ARGS;
+    TT_LOG_INFO("Apex.OS DOWN: nspid=%d", nspid);
+    LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
+        if (apex->nspid == nspid) {
+            coredata_delete_timer(apex); // Delete coredata timer
+            apex->task.pid = 0;
+            apex->nspid = 0;
+            return TT_SUCCESS;
+        }
+    }
+    return TT_ERROR_INVALID_ARGS;
 }
 
 tt_error_t handle_apex_reset_event(struct context *ctx)
 {
-	uint64_t cpu_affinity;
-	struct apex_info *apex;
+    uint64_t cpu_affinity;
+    struct apex_info *apex;
 
-	TT_LOG_INFO("Apex.OS RESET");
-	LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
-		int pid = apex->task.pid;
-		if (pid) {
-			// Reset CPU affinity to the normal value
-			cpu_affinity = apex->task.cpu_affinity & 0xFFFFFFFF;
-			if (set_affinity_cpumask_all_threads(pid, cpu_affinity) != TT_SUCCESS) {
-				TT_LOG_ERROR("Failed to set CPU affinity for task %s (%d)",
-					apex->task.name, pid);
-				return TT_ERROR_PERMISSION;
-			}
+    TT_LOG_INFO("Apex.OS RESET");
+    LIST_FOREACH(apex, &ctx->runtime.apex_list, entry) {
+        int pid = apex->task.pid;
+        if (pid) {
+            // Reset CPU affinity to the normal value
+            cpu_affinity = apex->task.cpu_affinity & 0xFFFFFFFF;
+            if (set_affinity_cpumask_all_threads(pid, cpu_affinity) != TT_SUCCESS) {
+                TT_LOG_ERROR("Failed to set CPU affinity for task %s (%d)",
+                    apex->task.name, pid);
+                return TT_ERROR_PERMISSION;
+            }
 
-			// Reset deadline miss counters
-			atomic_store(&apex->dmiss_count, 0);
-			atomic_store(&apex->dmiss_time_us, 0);
+            // Reset deadline miss counters
+            atomic_store(&apex->dmiss_count, 0);
+            atomic_store(&apex->dmiss_time_us, 0);
 
-			// Send fault info to coredata provider
-			coredata_client_send(apex);
-		}
-	}
-	return TT_ERROR_INVALID_ARGS;
+            // Send fault info to coredata provider
+            coredata_client_send(apex);
+        }
+    }
+    return TT_ERROR_INVALID_ARGS;
 }
 
 tt_error_t handle_apex_events(struct context *ctx)
 {
-	tt_error_t ret;
-	int type;
-	int nspid;
-	char name[MAX_APEX_NAME_LEN];
+    tt_error_t ret;
+    int type;
+    int nspid;
+    char name[MAX_APEX_NAME_LEN];
 
-	ret = apex_monitor_recv(ctx, name, sizeof(name), &nspid, &type);
-	if (ret != TT_SUCCESS)
-		return ret;
+    ret = apex_monitor_recv(ctx, name, sizeof(name), &nspid, &type);
+    if (ret != TT_SUCCESS)
+        return ret;
 
-	if (type == APEX_FAULT) {
-		handle_apex_fault_event(ctx, name);
-	} else if (type == APEX_UP) {
-		handle_apex_up_event(ctx, name, nspid);
-	} else if (type == APEX_DOWN) {
-		handle_apex_down_event(ctx, nspid);
-	} else if (type == APEX_RESET) {
-		handle_apex_reset_event(ctx);
-	}
+    if (type == APEX_FAULT) {
+        handle_apex_fault_event(ctx, name);
+    } else if (type == APEX_UP) {
+        handle_apex_up_event(ctx, name, nspid);
+    } else if (type == APEX_DOWN) {
+        handle_apex_down_event(ctx, nspid);
+    } else if (type == APEX_RESET) {
+        handle_apex_reset_event(ctx);
+    }
 
-	return TT_SUCCESS;
+    return TT_SUCCESS;
 }
 
 tt_error_t epoll_loop(struct context *ctx)
@@ -530,11 +530,11 @@ tt_error_t epoll_loop(struct context *ctx)
             return TT_ERROR_TIMER;
         }
 
-	// Handle Apex.OS Monitor events
-	if (events[0].data.fd == ctx->comm.apex_fd) {
-            handle_apex_events(ctx);
+        // Handle Apex.OS Monitor events
+        if (events[0].data.fd == ctx->comm.apex_fd) {
+           handle_apex_events(ctx);
             continue;
-	}
+        }
 
         // Handle process termination events - search across all workloads
         int found = 0;

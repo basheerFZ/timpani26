@@ -11,18 +11,18 @@ extern "C" {
 #endif
 
 struct sigwait_event {
-	int pid;
-	int tgid;
-	uint64_t timestamp;
-	uint8_t enter;
+    int pid;
+    int tgid;
+    uint64_t timestamp;
+    uint8_t enter;
 };
 
 struct schedstat_event {
-	int pid;
-	int cpu;
-	uint64_t ts_wakeup;
-	uint64_t ts_start;
-	uint64_t ts_stop;
+    int pid;
+    int cpu;
+    uint64_t ts_wakeup;
+    uint64_t ts_start;
+    uint64_t ts_stop;
 };
 
 #ifdef __cplusplus

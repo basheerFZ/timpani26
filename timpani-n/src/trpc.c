@@ -28,12 +28,12 @@ static int init_trpc_connection(const char *addr, int port, sd_bus **dbus_ret, s
 static void cleanup_trpc_connection(sd_bus **dbus, sd_event **event)
 {
     if (*dbus) {
-	sd_bus_flush_close_unref(*dbus);
-	*dbus = NULL;
+        sd_bus_flush_close_unref(*dbus);
+        *dbus = NULL;
     }
     if (*event) {
-	sd_event_unref(*event);
-	*event = NULL;
+        sd_event_unref(*event);
+        *event = NULL;
     }
 }
 
@@ -218,17 +218,17 @@ tt_error_t init_trpc(struct context *ctx)
         if (init_trpc_connection(ctx->config.addr, ctx->config.port,
                                 &ctx->comm.dbus, &ctx->comm.event) == 0) {
             if (ctx->config.enable_apex) {
-		TT_LOG_INFO("Apex.OS test mode enabled, proceeding without schedule info");
-		return TT_SUCCESS;
-	    }
+                TT_LOG_INFO("Apex.OS test mode enabled, proceeding without schedule info");
+                return TT_SUCCESS;
+            }
 
             if (get_workloads(ctx) == 0) {
                 /* Successfully retrieved schedule info */
                 TT_LOG_INFO("Successfully connected and retrieved schedule info (attempt %d)", retry_count + 1);
                 return TT_SUCCESS;
             }
-	    // Failed to get schedule info, clean up the connection resources
-	    cleanup_trpc_connection(&ctx->comm.dbus, &ctx->comm.event);
+            // Failed to get schedule info, clean up the connection resources
+            cleanup_trpc_connection(&ctx->comm.dbus, &ctx->comm.event);
         }
 
         /* failed to get schedule info, retrying */

@@ -31,17 +31,17 @@ set(BPF_OBJ "${Output}")
 set(SKEL_HDR "${OutputSkel}")
 
 add_custom_command(OUTPUT ${BPF_OBJ}
-        # We ensure BPF_INCLUDES is passed to clang
-        COMMAND clang -target bpf -g -O2 -c ${BPF_SRC} -o ${BPF_OBJ} ${BPF_INCLUDES}
-        VERBATIM
-        # Added libbpf as a dependency so headers are built before clang runs
-        DEPENDS ${BPF_SRC} ${VMLINUX_H_DIR}/vmlinux.h libbpf
+    # We ensure BPF_INCLUDES is passed to clang
+    COMMAND clang -target bpf -g -O2 -c ${BPF_SRC} -o ${BPF_OBJ} ${BPF_INCLUDES}
+    VERBATIM
+    # Added libbpf as a dependency so headers are built before clang runs
+    DEPENDS ${BPF_SRC} ${VMLINUX_H_DIR}/vmlinux.h libbpf
 )
 
 add_custom_command(OUTPUT ${SKEL_HDR}
-        COMMAND bpftool gen skeleton ${BPF_OBJ} > ${SKEL_HDR}
-        VERBATIM
-        DEPENDS ${BPF_OBJ}
+    COMMAND bpftool gen skeleton ${BPF_OBJ} > ${SKEL_HDR}
+    VERBATIM
+    DEPENDS ${BPF_OBJ}
 )
 
 get_source_file_property(LOADER_DEPENDS ${LOADER_SRC} OBJECT_DEPENDS)
@@ -51,6 +51,6 @@ endif()
 set(LOADER_DEPENDS ${LOADER_DEPENDS} ${SKEL_HDR})
 
 set_source_files_properties(${LOADER_SRC}
-            PROPERTIES OBJECT_DEPENDS "${LOADER_DEPENDS}")
+    PROPERTIES OBJECT_DEPENDS "${LOADER_DEPENDS}")
 
 endmacro()

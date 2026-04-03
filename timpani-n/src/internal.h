@@ -343,7 +343,7 @@ struct context {
         char node_id[TINFO_NODEID_MAX]; // Node identifier
         bool enable_sync;               // Timer synchronization enabled
         bool enable_plot;               // Plot feature enabled
-	bool enable_apex;               // Apex.OS Test Mode
+        bool enable_apex;               // Apex.OS Test Mode
         clockid_t clockid;              // Clock type to use
         tt_log_level_t log_level;       // Log level
     } config;

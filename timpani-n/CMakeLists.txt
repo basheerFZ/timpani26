@@ -56,16 +56,16 @@ endif()
 # timpani-n sources
 set(TIMPANI_N_SOURCES
     src/main.c
-	src/core.c
-	src/hyperperiod.c
-	src/task.c
+    src/core.c
+    src/hyperperiod.c
+    src/task.c
     src/config.c
-	src/trpc.c
-	src/signal.c
-	src/cleanup.c
+    src/trpc.c
+    src/signal.c
+    src/cleanup.c
     src/sched.c
-	src/globals.c
-	src/apex_monitor.c
+    src/globals.c
+    src/apex_monitor.c
 )
 
 if(CONFIG_TRACE_BPF)

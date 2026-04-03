@@ -82,7 +82,7 @@ tt_error_t parse_config(int argc, char *argv[], struct context *ctx)
             ctx->config.enable_plot = true;
             break;
         case 'a':
-	    ctx->config.enable_apex = true;
+            ctx->config.enable_apex = true;
             break;
         case 'h':
         default:
