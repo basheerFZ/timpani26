@@ -74,10 +74,26 @@ endif()
 
 add_executable(timpani-n ${TIMPANI_N_SOURCES})
 
+# timpani-n-cpp (DDR-006 C++ rework skeleton)
+set(TIMPANI_N_CPP_SOURCES
+    src/main.cpp
+    src/timer_master.cpp
+    src/bpf_loader.cpp
+    src/fault_monitor.cpp
+    src/task_registry.cpp
+    src/grpc/node_client.cpp
+)
+add_executable(timpani-n-cpp ${TIMPANI_N_CPP_SOURCES})
+
 # BPF dependencies
 if(CONFIG_TRACE_BPF)
     add_dependencies(timpani-n libbpf)
+    add_dependencies(timpani-n-cpp libbpf)
     target_include_directories(timpani-n PRIVATE
+        ${CMAKE_BINARY_DIR}
+        ${CMAKE_BINARY_DIR}/libbpf/usr/include
+    )
+    target_include_directories(timpani-n-cpp PRIVATE
         ${CMAKE_BINARY_DIR}
         ${CMAKE_BINARY_DIR}/libbpf/usr/include
     )
@@ -85,11 +101,17 @@ if(CONFIG_TRACE_BPF)
         ${CMAKE_BINARY_DIR}/libbpf/obj/libbpf.a
         pthread elf z
     )
+    target_link_libraries(timpani-n-cpp
+        ${CMAKE_BINARY_DIR}/libbpf/obj/libbpf.a
+        pthread elf z
+    )
 endif()
 
 # Optimization
 target_compile_options(timpani-n PRIVATE -O3 -flto -funroll-loops -ffast-math -fomit-frame-pointer)
+target_compile_options(timpani-n-cpp PRIVATE -O3 -flto -funroll-loops -ffast-math -fomit-frame-pointer)
 set_target_properties(timpani-n PROPERTIES LINK_FLAGS "-flto -O3")
+set_target_properties(timpani-n-cpp PROPERTIES LINK_FLAGS "-flto -O3")
 
 # Handle libtrpc (Sibling folder)
 if(EXISTS "${CMAKE_SOURCE_DIR}/../libtrpc")
@@ -97,12 +119,17 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../libtrpc")
 endif()
 
 target_link_libraries(timpani-n trpc systemd rt)
+target_link_libraries(timpani-n-cpp trpc systemd rt)
 target_include_directories(timpani-n
     PUBLIC ${CMAKE_SOURCE_DIR}/src
     PUBLIC ${CMAKE_SOURCE_DIR}/../libtrpc/src
 )
+target_include_directories(timpani-n-cpp
+    PUBLIC ${CMAKE_SOURCE_DIR}/src
+    PUBLIC ${CMAKE_SOURCE_DIR}/../libtrpc/src
+)
 
-install(TARGETS timpani-n DESTINATION bin)
+install(TARGETS timpani-n timpani-n-cpp DESTINATION bin)
 add_executable(exprocs EXCLUDE_FROM_ALL test/exprocs.c)
 
 include(CPack)
