@@ -14,7 +14,7 @@ find_package(GTest REQUIRED)
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../src)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/../proto)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../external/libtrpc/src)
+include_directories(${CMAKE_SOURCE_DIR}/../libtrpc/src)
 include_directories(${GTEST_INCLUDE_DIRS})
 
 # Create test executable
@@ -65,7 +65,7 @@ target_link_libraries(test_dbus_server
     gRPC::grpc++
     protobuf::libprotobuf
     schedinfo_proto  # Proto library from proto directory
-    ${CMAKE_CURRENT_BINARY_DIR}/../external/libtrpc/libtrpc.so
+    trpc
     systemd
     pthread
 )

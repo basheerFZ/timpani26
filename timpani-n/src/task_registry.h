@@ -3,21 +3,21 @@
 
 #pragma once
 
-#include <string>
+#include "bpf_loader.h"
 
 namespace timpani {
 namespace node {
 
 class TaskRegistry {
 public:
-    TaskRegistry();
+    explicit TaskRegistry(BpfLoader& bpf_loader);
     ~TaskRegistry();
 
     void scan_cgroups();
-    void register_task(int pid, int tid, const std::string& comm);
+    void register_task(const char* comm, unsigned long task_id);
 
 private:
-    // Internal state for discovered pids
+    BpfLoader& bpf_loader_;
 };
 
 } // namespace node

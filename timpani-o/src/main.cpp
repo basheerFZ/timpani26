@@ -15,6 +15,7 @@
 #include "fault_client.h"
 #include "dbus_server.h"
 #include "node_config.h"
+#include "orchestrator_service.h"
 
 bool RunSchedInfoServer(int port, std::unique_ptr<SchedInfoServer>& server,
                         std::shared_ptr<NodeConfigManager> node_config_manager)
@@ -51,6 +52,26 @@ bool RunDBusServer(int port, SchedInfoServer* sinfo_server)
         return false;
     }
     TLOG_INFO("DBusServer listening on port ", port);
+    return true;
+}
+
+std::unique_ptr<grpc::Server> g_orchestrator_server;
+std::unique_ptr<timpani::orchestrator::OrchestratorServiceImpl> g_orchestrator_service;
+
+bool RunOrchestratorServer(int port) {
+    std::string server_address("0.0.0.0:" + std::to_string(port));
+    g_orchestrator_service = std::make_unique<timpani::orchestrator::OrchestratorServiceImpl>();
+
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+    builder.RegisterService(g_orchestrator_service.get());
+    
+    g_orchestrator_server = builder.BuildAndStart();
+    if (!g_orchestrator_server) {
+        TLOG_ERROR("Failed to start OrchestratorServer on port ", port);
+        return false;
+    }
+    TLOG_INFO("OrchestratorServer listening on port ", port);
     return true;
 }
 
@@ -155,6 +176,12 @@ int main(int argc, char **argv)
 
     // Run the DBusServer
     if (!RunDBusServer(dbus_port, sinfo_server.get())) {
+        return EXIT_FAILURE;
+    }
+
+    // Run the OrchestratorServer
+    int orchestrator_port = 50060;
+    if (!RunOrchestratorServer(orchestrator_port)) {
         return EXIT_FAILURE;
     }
 

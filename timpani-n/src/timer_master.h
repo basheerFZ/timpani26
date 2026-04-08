@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <thread>
+
 namespace timpani {
 namespace node {
 
@@ -18,6 +20,7 @@ private:
     void thread_loop();
 
     bool running_;
+    std::thread loop_thread_;
 };
 
 } // namespace node

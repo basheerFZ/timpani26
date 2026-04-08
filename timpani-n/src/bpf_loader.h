@@ -21,7 +21,14 @@ public:
     bool update_tt_slot(const TtSlotKey& key, const TtSlotBpf& slot);
     bool update_cbs_state(uint64_t hash, const CbsState& state);
 
+    // Shadow Map Swapping for hot updates
+    void swap_shadow_maps();
+    int get_active_map_idx() const;
+    int get_shadow_map_idx() const;
+    void apply_table_update();
+
 private:
+    int active_map_idx_;
     // struct timpani_bpf* skel_; // To be generated via bpftool
 };
 

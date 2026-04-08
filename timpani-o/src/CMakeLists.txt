@@ -11,6 +11,7 @@ add_executable(timpani-o
   global_scheduler.cpp
   scheduler_utils.cpp
   hyperperiod_manager.cpp
+  orchestrator_service.cpp
 )
 
 target_include_directories(timpani-o
@@ -21,6 +22,7 @@ target_include_directories(timpani-o
 target_link_libraries(timpani-o
   PRIVATE
     schedinfo_proto
+    node_control_proto
   PUBLIC
     trpc
 )

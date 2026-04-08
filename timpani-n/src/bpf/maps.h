@@ -17,6 +17,7 @@ extern "C" {
 
 struct PartitionInfo {
     __u64 task_id_hash;
+    __u64 cgroup_id;
     __u8  layer;
     __u8  asil_level;
     __u64 cpu_mask;

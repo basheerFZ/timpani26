@@ -14,6 +14,41 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}")
 option(CONFIG_TRACE_BPF "Enable eBPF support" ON)
 option(CONFIG_TRACE_BPF_EVENT "Enable eBPF-based event tracing" OFF)
 
+# GRPC / Protobuf definitions for node_control.proto
+set(TIMPANI_O_PROTO_DIR "${CMAKE_SOURCE_DIR}/../timpani-o/proto")
+find_package(gRPC QUIET)
+if (gRPC_FOUND)
+    set(NODE_GRPC_LIB gRPC::grpc++)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_search_module(GRPC REQUIRED IMPORTED_TARGET grpc)
+    pkg_search_module(GRPCPP REQUIRED IMPORTED_TARGET grpc++)
+    set(NODE_GRPC_LIB PkgConfig::GRPCPP)
+endif()
+find_package(Protobuf REQUIRED)
+
+find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
+if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
+    message(FATAL_ERROR "grpc_cpp_plugin not found")
+endif()
+
+set(PROTO_FILE "${TIMPANI_O_PROTO_DIR}/node_control.proto")
+set(NODE_CONTROL_PROTO_SRC "${CMAKE_BINARY_DIR}/node_control.pb.cc")
+set(NODE_CONTROL_PROTO_HDR "${CMAKE_BINARY_DIR}/node_control.pb.h")
+set(NODE_CONTROL_GRPC_SRC "${CMAKE_BINARY_DIR}/node_control.grpc.pb.cc")
+set(NODE_CONTROL_GRPC_HDR "${CMAKE_BINARY_DIR}/node_control.grpc.pb.h")
+
+add_custom_command(
+    OUTPUT "${NODE_CONTROL_PROTO_SRC}" "${NODE_CONTROL_PROTO_HDR}" "${NODE_CONTROL_GRPC_SRC}" "${NODE_CONTROL_GRPC_HDR}"
+    COMMAND ${PROTOBUF_PROTOC_EXECUTABLE}
+    ARGS --grpc_out="${CMAKE_BINARY_DIR}"
+         --cpp_out="${CMAKE_BINARY_DIR}"
+         -I "${TIMPANI_O_PROTO_DIR}"
+         --plugin=protoc-gen-grpc="${GRPC_CPP_PLUGIN_EXECUTABLE}"
+         "${PROTO_FILE}"
+    DEPENDS "${PROTO_FILE}"
+)
+
 if(CONFIG_TRACE_BPF)
     message("CONFIG_TRACE_BPF is ON")
 
@@ -82,6 +117,8 @@ set(TIMPANI_N_CPP_SOURCES
     src/fault_monitor.cpp
     src/task_registry.cpp
     src/grpc/node_client.cpp
+    ${NODE_CONTROL_PROTO_SRC}
+    ${NODE_CONTROL_GRPC_SRC}
 )
 add_executable(timpani-n-cpp ${TIMPANI_N_CPP_SOURCES})
 
@@ -119,14 +156,19 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../libtrpc")
 endif()
 
 target_link_libraries(timpani-n trpc systemd rt)
-target_link_libraries(timpani-n-cpp trpc systemd rt)
 target_include_directories(timpani-n
     PUBLIC ${CMAKE_SOURCE_DIR}/src
     PUBLIC ${CMAKE_SOURCE_DIR}/../libtrpc/src
 )
+
+target_link_libraries(timpani-n-cpp
+    ${NODE_GRPC_LIB}
+    protobuf::libprotobuf
+    systemd rt
+)
 target_include_directories(timpani-n-cpp
     PUBLIC ${CMAKE_SOURCE_DIR}/src
-    PUBLIC ${CMAKE_SOURCE_DIR}/../libtrpc/src
+    PUBLIC ${CMAKE_BINARY_DIR}
 )
 
 install(TARGETS timpani-n timpani-n-cpp DESTINATION bin)
