@@ -15,8 +15,8 @@ endif()
 list(APPEND BPF_INCLUDES "-I${CMAKE_BINARY_DIR}/libbpf/usr/include")
 # --- FIX END ---
 
-set(VMLINUX_H_DIR ${CMAKE_SOURCE_DIR}/src/bpf/${BPF_ARCH})
-set(BPF_INCLUDES ${BPF_INCLUDES} -I${VMLINUX_H_DIR})
+set(VMLINUX_H "${CMAKE_BINARY_DIR}/vmlinux.h")
+set(BPF_INCLUDES ${BPF_INCLUDES} -I${CMAKE_BINARY_DIR})
 
 if(LIBBPF_BINARY_DIR)
     set(BPF_INCLUDES ${BPF_INCLUDES} -I${LIBBPF_BINARY_DIR})
@@ -30,12 +30,20 @@ set(BPF_SRC "${CMAKE_SOURCE_DIR}/${Input}")
 set(BPF_OBJ "${Output}")
 set(SKEL_HDR "${OutputSkel}")
 
+# vmlinux.h auto generation
+add_custom_command(
+    OUTPUT ${VMLINUX_H}
+    COMMAND bpftool btf dump file /sys/kernel/btf/vmlinux format c > ${VMLINUX_H}
+    COMMENT "Generating vmlinux.h from running kernel BTF"
+    VERBATIM
+)
+
 add_custom_command(OUTPUT ${BPF_OBJ}
     # We ensure BPF_INCLUDES is passed to clang
     COMMAND clang -target bpf -g -O2 -c ${BPF_SRC} -o ${BPF_OBJ} ${BPF_INCLUDES}
     VERBATIM
     # Added libbpf as a dependency so headers are built before clang runs
-    DEPENDS ${BPF_SRC} ${VMLINUX_H_DIR}/vmlinux.h libbpf
+    DEPENDS ${BPF_SRC} ${VMLINUX_H} libbpf
 )
 
 add_custom_command(OUTPUT ${SKEL_HDR}

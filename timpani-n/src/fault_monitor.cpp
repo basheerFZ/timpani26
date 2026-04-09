@@ -2,15 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 #include "fault_monitor.h"
+#include <iostream>
+#include <bpf/libbpf.h>
 
 namespace timpani {
 namespace node {
 
-FaultMonitor::FaultMonitor() : running_(false) {
+FaultMonitor::FaultMonitor() : running_(false), ringbuf_fd_(-1) {
 }
 
 FaultMonitor::~FaultMonitor() {
     stop();
+}
+
+void FaultMonitor::set_ringbuf_fd(int fd) {
+    ringbuf_fd_ = fd;
 }
 
 void FaultMonitor::set_callback(FaultCallback cb) {
@@ -19,15 +25,34 @@ void FaultMonitor::set_callback(FaultCallback cb) {
 
 void FaultMonitor::start() {
     running_ = true;
-    // TODO: start polling thread for ringbuf
+    poll_thread_ = std::thread(&FaultMonitor::poll_loop, this);
 }
 
 void FaultMonitor::stop() {
     running_ = false;
+    if (poll_thread_.joinable()) {
+        poll_thread_.join();
+    }
 }
 
 void FaultMonitor::poll_loop() {
-    // TODO: eBPF ringbuf polling logic
+    if (ringbuf_fd_ < 0) return;
+    struct ring_buffer* rb = ring_buffer__new(ringbuf_fd_, ring_buf_callback, this, NULL);
+    if (!rb) return;
+
+    while (running_) {
+        ring_buffer__poll(rb, 100);
+    }
+    ring_buffer__free(rb);
+}
+
+int FaultMonitor::ring_buf_callback(void* ctx, void* data, size_t len) {
+    auto* self = static_cast<FaultMonitor*>(ctx);
+    auto* event = static_cast<const FaultEvent*>(data);
+    if (self->callback_) {
+        self->callback_(*event);
+    }
+    return 0;
 }
 
 } // namespace node

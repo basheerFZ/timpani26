@@ -30,10 +30,11 @@ private:
     struct ConnectedNode {
         std::string node_id;
         grpc::ServerReaderWriter<ControlCommand, NodeEvent>* stream;
+        std::mutex write_mutex; // Protect stream writes
     };
 
     std::mutex nodes_mutex_;
-    std::map<std::string, ConnectedNode*> connected_nodes_;
+    std::map<std::string, std::shared_ptr<ConnectedNode>> connected_nodes_;
 
     void handle_node_ready(const NodeReady& ready, ConnectedNode& node);
     void handle_node_status(const NodeStatus& status, ConnectedNode& node);

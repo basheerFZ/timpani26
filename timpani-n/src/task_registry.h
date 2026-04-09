@@ -4,6 +4,8 @@
 #pragma once
 
 #include "bpf_loader.h"
+#include <string>
+#include <map>
 
 namespace timpani {
 namespace node {
@@ -18,6 +20,7 @@ public:
 
 private:
     BpfLoader& bpf_loader_;
+    std::map<std::string, unsigned long> expected_tasks_;
 };
 
 } // namespace node

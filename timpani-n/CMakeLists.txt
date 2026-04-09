@@ -79,6 +79,7 @@ if(CONFIG_TRACE_BPF)
     # If sigwait.bpf.c fails to find headers, we might need to edit bpf.cmake
     include_directories(${CMAKE_BINARY_DIR}/libbpf/usr/include)
     ADD_BPF(src/trace_bpf.c src/sigwait.bpf.c sigwait.bpf.o sigwait.skel.h)
+    ADD_BPF(src/bpf_loader.cpp src/bpf/timpani.bpf.c timpani.bpf.o timpani.skel.h)
 
     if(CONFIG_TRACE_BPF_EVENT)
         message("CONFIG_TRACE_BPF_EVENT is ON")
@@ -164,7 +165,7 @@ target_include_directories(timpani-n
 target_link_libraries(timpani-n-cpp
     ${NODE_GRPC_LIB}
     protobuf::libprotobuf
-    systemd rt
+    rt
 )
 target_include_directories(timpani-n-cpp
     PUBLIC ${CMAKE_SOURCE_DIR}/src

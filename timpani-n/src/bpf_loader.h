@@ -6,6 +6,8 @@
 #include "bpf/maps.h"
 #include <cstdint>
 
+struct timpani_bpf;
+
 namespace timpani {
 namespace node {
 
@@ -17,9 +19,13 @@ public:
     bool load_programs();
     void unload_programs();
 
-    bool update_partition(int cgroup_id, const PartitionInfo& info);
+    bool update_partition(uint64_t cgroup_id, const PartitionInfo& info);
     bool update_tt_slot(const TtSlotKey& key, const TtSlotBpf& slot);
     bool update_cbs_state(uint64_t hash, const CbsState& state);
+    bool update_task_meta(uint32_t pid, const TaskMeta& meta);
+    bool update_current_slot(uint32_t cpu, uint32_t slot_idx);
+    
+    int get_fault_ringbuf_fd() const;
 
     // Shadow Map Swapping for hot updates
     void swap_shadow_maps();
@@ -29,7 +35,7 @@ public:
 
 private:
     int active_map_idx_;
-    // struct timpani_bpf* skel_; // To be generated via bpftool
+    struct timpani_bpf* skel_;
 };
 
 } // namespace node

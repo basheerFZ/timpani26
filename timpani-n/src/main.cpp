@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
 
         // Initialize Fault Monitor
         timpani::node::FaultMonitor fault_monitor;
+        fault_monitor.set_ringbuf_fd(bpf_loader.get_fault_ringbuf_fd());
 
         // Initialize NodeClient (gRPC)
         timpani::node::NodeClient node_client("127.0.0.1:50060");
@@ -63,10 +64,16 @@ int main(int argc, char** argv) {
 
         fault_monitor.start();
         node_client.connect();
-        node_client.send_ready();
 
         // 5. Initialize Timer Master (RT Priority Thread) last
-        timpani::node::TimerMaster timer_master;
+        timpani::node::TimerMaster timer_master(bpf_loader);
+        
+        // Inject dummy slot for PoC test measuring jitter without orchestra payload
+        std::vector<timpani::node::TimerMaster::SlotEntry> test_slots;
+        timpani::node::TimerMaster::SlotEntry dummy_slot = { .cpu = 0, .slot_idx = 0, .offset_ns = 1000000, .task_id_hash = 0 };
+        test_slots.push_back(dummy_slot);
+        timer_master.set_schedule_table(test_slots, 1000 /* 1ms hypper */, 0 /* realtime generation */);
+        
         timer_master.start();
 
         // Daemon simply waits for shutdown signal

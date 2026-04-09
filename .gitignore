@@ -126,3 +126,13 @@ node_modules/
 *_results.log
 dist/reports/
 etcd.log
+# Temporary tools & binaries
+build/
+*.patch
+commit.txt
+fix_commit.sh
+temp-*
+sample-apps/build/
+
+# Auto-generated BPF vmlinux.h
+**/vmlinux.h

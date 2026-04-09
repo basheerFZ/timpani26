@@ -15,33 +15,33 @@ grpc::Status OrchestratorServiceImpl::NodeStream(
     grpc::ServerContext* context,
     grpc::ServerReaderWriter<ControlCommand, NodeEvent>* stream) {
     
-    ConnectedNode current_node;
-    current_node.stream = stream;
+    auto current_node = std::make_shared<ConnectedNode>();
+    current_node->stream = stream;
 
     NodeEvent event;
     while (stream->Read(&event)) {
-        if (current_node.node_id.empty() && !event.node_id().empty()) {
-            current_node.node_id = event.node_id();
+        if (current_node->node_id.empty() && !event.node_id().empty()) {
+            current_node->node_id = event.node_id();
             std::lock_guard<std::mutex> lock(nodes_mutex_);
-            connected_nodes_[current_node.node_id] = &current_node;
-            std::cout << "[Orchestrator] Node connected: " << current_node.node_id << std::endl;
+            connected_nodes_[current_node->node_id] = current_node;
+            std::cout << "[Orchestrator] Node connected: " << current_node->node_id << std::endl;
         }
 
         if (event.has_ready()) {
-            handle_node_ready(event.ready(), current_node);
+            handle_node_ready(event.ready(), *current_node);
         } else if (event.has_status()) {
-            handle_node_status(event.status(), current_node);
+            handle_node_status(event.status(), *current_node);
         } else if (event.has_fault()) {
-            handle_fault_info(event.fault(), current_node);
+            handle_fault_info(event.fault(), *current_node);
         } else if (event.has_applied()) {
-            handle_table_applied(event.applied(), current_node);
+            handle_table_applied(event.applied(), *current_node);
         }
     }
 
-    if (!current_node.node_id.empty()) {
+    if (!current_node->node_id.empty()) {
         std::lock_guard<std::mutex> lock(nodes_mutex_);
-        connected_nodes_.erase(current_node.node_id);
-        std::cout << "[Orchestrator] Node disconnected: " << current_node.node_id << std::endl;
+        connected_nodes_.erase(current_node->node_id);
+        std::cout << "[Orchestrator] Node disconnected: " << current_node->node_id << std::endl;
     }
 
     return grpc::Status::OK;
@@ -68,23 +68,39 @@ void OrchestratorServiceImpl::handle_table_applied(const TableApplied& applied, 
 }
 
 bool OrchestratorServiceImpl::push_full_table(const std::string& node_id, const HierarchicalScheduleTable& table) {
-    std::lock_guard<std::mutex> lock(nodes_mutex_);
-    auto it = connected_nodes_.find(node_id);
-    if (it != connected_nodes_.end()) {
+    std::shared_ptr<ConnectedNode> target_node;
+    {
+        std::lock_guard<std::mutex> lock(nodes_mutex_);
+        auto it = connected_nodes_.find(node_id);
+        if (it != connected_nodes_.end()) {
+            target_node = it->second;
+        }
+    }
+    
+    if (target_node) {
         ControlCommand cmd;
         *cmd.mutable_full_table() = table;
-        return it->second->stream->Write(cmd);
+        std::lock_guard<std::mutex> stream_lock(target_node->write_mutex);
+        return target_node->stream->Write(cmd);
     }
     return false;
 }
 
 bool OrchestratorServiceImpl::push_update(const std::string& node_id, const ScheduleTableUpdate& update) {
-    std::lock_guard<std::mutex> lock(nodes_mutex_);
-    auto it = connected_nodes_.find(node_id);
-    if (it != connected_nodes_.end()) {
+    std::shared_ptr<ConnectedNode> target_node;
+    {
+        std::lock_guard<std::mutex> lock(nodes_mutex_);
+        auto it = connected_nodes_.find(node_id);
+        if (it != connected_nodes_.end()) {
+            target_node = it->second;
+        }
+    }
+    
+    if (target_node) {
         ControlCommand cmd;
         *cmd.mutable_update() = update;
-        return it->second->stream->Write(cmd);
+        std::lock_guard<std::mutex> stream_lock(target_node->write_mutex);
+        return target_node->stream->Write(cmd);
     }
     return false;
 }

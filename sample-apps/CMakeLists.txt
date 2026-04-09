@@ -16,11 +16,15 @@ install(TARGETS
 )
 
 # sample_apps program
+add_library(ttsched SHARED src/libttsched.c)
+target_include_directories(ttsched PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 add_executable(sample_apps src/sample_apps.c)
 target_include_directories(sample_apps
 			PUBLIC ${CMAKE_SOURCE_DIR}/src
+            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_options(sample_apps
 		PUBLIC ${LIBSYSTEMD_CFLAGS_OTHER}
 )
-target_link_libraries(sample_apps PUBLIC m)
+target_link_libraries(sample_apps PUBLIC m ttsched)
