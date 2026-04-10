@@ -3,17 +3,19 @@
 
 #pragma once
 
-#include <thread>
-#include <vector>
 #include <atomic>
 #include <cstdint>
+#include <thread>
+#include <vector>
+
 #include "bpf_loader.h"
 
 namespace timpani {
 namespace node {
 
-class TimerMaster {
-public:
+class TimerMaster
+{
+  public:
     struct SlotEntry {
         uint32_t cpu;
         uint32_t slot_idx;
@@ -24,12 +26,13 @@ public:
     TimerMaster(BpfLoader& bpf_loader);
     ~TimerMaster();
 
-    void set_schedule_table(const std::vector<SlotEntry>& slots, uint64_t hyperperiod_us, uint64_t epoch_ns);
+    void set_schedule_table(const std::vector<SlotEntry>& slots,
+                            uint64_t hyperperiod_us, uint64_t epoch_ns);
 
     void start();
     void stop();
 
-private:
+  private:
     void thread_loop();
     void wake_dummy_tasks();
 
@@ -47,5 +50,5 @@ private:
     uint64_t epoch_ns_;
 };
 
-} // namespace node
-} // namespace timpani
+}  // namespace node
+}  // namespace timpani

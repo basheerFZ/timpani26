@@ -1,27 +1,26 @@
 // SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
 // SPDX-License-Identifier: MIT
 
-#include "timer_master.h"
+#include <dirent.h>
+#include <errno.h>
+#include <sched.h>
+#include <unistd.h>
+
+#include <cctype>
+#include <csignal>
+#include <fstream>
+#include <iostream>
+#include <memory>
+
 #include "bpf_loader.h"
 #include "fault_monitor.h"
-#include "task_registry.h"
 #include "grpc/node_client.h"
-
-#include <iostream>
-#include <fstream>
-#include <memory>
-#include <csignal>
-#include <unistd.h>
-#include <sched.h>
-#include <errno.h>
-#include <cctype>
-#include <dirent.h>
+#include "task_registry.h"
+#include "timer_master.h"
 
 volatile sig_atomic_t g_shutdown = 0;
 
-void signal_handler(int /* signum */) {
-    g_shutdown = 1;
-}
+void signal_handler(int /* signum */) { g_shutdown = 1; }
 
 /**
  * @brief Search /proc for a process with matching comm name.
@@ -39,7 +38,10 @@ static pid_t find_pid_by_comm(const std::string& comm)
         if (entry->d_type != DT_DIR) continue;
         bool is_num = true;
         for (const char* p = entry->d_name; *p; ++p)
-            if (!std::isdigit(static_cast<unsigned char>(*p))) { is_num = false; break; }
+            if (!std::isdigit(static_cast<unsigned char>(*p))) {
+                is_num = false;
+                break;
+            }
         if (!is_num) continue;
 
         std::string comm_path = std::string("/proc/") + entry->d_name + "/comm";
@@ -59,11 +61,13 @@ static pid_t find_pid_by_comm(const std::string& comm)
     return found;
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    std::cout << "Starting TIMPANI Node Executor (timpani-n C++ rework)..." << std::endl;
+    std::cout << "Starting TIMPANI Node Executor (timpani-n C++ rework)..."
+              << std::endl;
 
     try {
         // 1. Initialize BPF Loader and ensure safe termination
@@ -102,7 +106,9 @@ int main(int argc, char** argv) {
                         const std::string& task_id = slot.task_id();
                         pid_t pid = find_pid_by_comm(task_id);
                         if (pid < 0) {
-                            std::cerr << "[main] Task not found in /proc: " << task_id << std::endl;
+                            std::cerr
+                                << "[main] Task not found in /proc: " << task_id
+                                << std::endl;
                             continue;
                         }
 
@@ -110,20 +116,23 @@ int main(int argc, char** argv) {
                         struct sched_param param;
                         param.sched_priority = 20;
                         if (sched_setscheduler(pid, SCHED_FIFO, &param) == 0) {
-                            std::cout << "[main] Applied SCHED_FIFO to " << task_id
-                                      << " pid=" << pid << std::endl;
+                            std::cout << "[main] Applied SCHED_FIFO to "
+                                      << task_id << " pid=" << pid << std::endl;
                         } else {
-                            std::cerr << "[main] sched_setscheduler failed for " << task_id
-                                      << " pid=" << pid << " errno=" << errno << std::endl;
+                            std::cerr << "[main] sched_setscheduler failed for "
+                                      << task_id << " pid=" << pid
+                                      << " errno=" << errno << std::endl;
                         }
 
                         // Apply CPU affinity
-                        if (sched_setaffinity(pid, sizeof(cpuset), &cpuset) == 0) {
-                            std::cout << "[main] Applied CPU affinity to " << task_id
-                                      << " pid=" << pid << std::endl;
+                        if (sched_setaffinity(pid, sizeof(cpuset), &cpuset) ==
+                            0) {
+                            std::cout << "[main] Applied CPU affinity to "
+                                      << task_id << " pid=" << pid << std::endl;
                         } else {
-                            std::cerr << "[main] sched_setaffinity failed for " << task_id
-                                      << " pid=" << pid << " errno=" << errno << std::endl;
+                            std::cerr << "[main] sched_setaffinity failed for "
+                                      << task_id << " pid=" << pid
+                                      << " errno=" << errno << std::endl;
                         }
                     }
                 }
@@ -131,7 +140,8 @@ int main(int argc, char** argv) {
         });
 
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
-            std::cout << "[main] Received shutdown command: " << grace_period_ms << " ms" << std::endl;
+            std::cout << "[main] Received shutdown command: " << grace_period_ms
+                      << " ms" << std::endl;
             // Handle shutdown
         });
 
@@ -139,22 +149,91 @@ int main(int argc, char** argv) {
             timpani::node::v1::FaultInfo fault;
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
-            fault.set_fault_type(static_cast<timpani::node::v1::FaultType>(event.fault_type));
+            fault.set_fault_type(
+                static_cast<timpani::node::v1::FaultType>(event.fault_type));
             node_client.send_fault(fault);
         });
 
         fault_monitor.start();
-        node_client.connect();
 
         // 5. Initialize Timer Master (RT Priority Thread) last
         timpani::node::TimerMaster timer_master(bpf_loader);
-        
-        // Inject dummy slot for PoC test measuring jitter without orchestra payload
-        std::vector<timpani::node::TimerMaster::SlotEntry> test_slots;
-        timpani::node::TimerMaster::SlotEntry dummy_slot = { .cpu = 0, .slot_idx = 0, .offset_ns = 1000000, .task_id_hash = 0 };
-        test_slots.push_back(dummy_slot);
-        timer_master.set_schedule_table(test_slots, 1000 /* 1ms hypper */, 0 /* realtime generation */);
-        
+
+        // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
+        // slots (Re-set callback now that timer_master is in scope)
+        node_client.set_table_callback([&bpf_loader,
+                                        &timer_master](const auto& table) {
+            std::cout << "[main] Received table: " << table.table_id()
+                      << " hyperperiod=" << table.hyperperiod_us() << "us"
+                      << " partitions=" << table.partitions_size() << std::endl;
+
+            // Build SlotEntry list from TtSlots
+            std::vector<timpani::node::TimerMaster::SlotEntry> slots;
+            uint32_t slot_idx = 0;
+            for (const auto& partition : table.partitions()) {
+                // Build CPU affinity mask from partition cpuset
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                for (uint32_t cpu : partition.cpuset().cpus())
+                    CPU_SET(cpu, &cpuset);
+
+                for (const auto& layer : partition.layers()) {
+                    for (const auto& tt_slot : layer.tt_slots()) {
+                        // Apply SCHED_FIFO + affinity to matching process
+                        const std::string& task_id = tt_slot.task_id();
+                        pid_t pid = find_pid_by_comm(task_id);
+                        if (pid < 0) {
+                            std::cerr
+                                << "[main] Task not found in /proc: " << task_id
+                                << std::endl;
+                        } else {
+                            struct sched_param param;
+                            param.sched_priority = 20;
+                            if (sched_setscheduler(pid, SCHED_FIFO, &param) ==
+                                0)
+                                std::cout << "[main] Applied SCHED_FIFO to "
+                                          << task_id << " pid=" << pid
+                                          << std::endl;
+                            else
+                                std::cerr
+                                    << "[main] sched_setscheduler failed for "
+                                    << task_id << " pid=" << pid
+                                    << " errno=" << errno << std::endl;
+
+                            if (sched_setaffinity(pid, sizeof(cpuset),
+                                                  &cpuset) == 0)
+                                std::cout << "[main] Applied CPU affinity to "
+                                          << task_id << " pid=" << pid
+                                          << std::endl;
+                            else
+                                std::cerr
+                                    << "[main] sched_setaffinity failed for "
+                                    << task_id << " pid=" << pid
+                                    << " errno=" << errno << std::endl;
+                        }
+
+                        // Add TimerMaster slot entry
+                        timpani::node::TimerMaster::SlotEntry entry;
+                        entry.cpu = tt_slot.cpu();
+                        entry.slot_idx = slot_idx++;
+                        entry.offset_ns =
+                            static_cast<uint64_t>(tt_slot.offset_us()) *
+                            1000ULL;
+                        entry.task_id_hash = tt_slot.task_id_hash();
+                        slots.push_back(entry);
+                    }
+                }
+            }
+
+            uint64_t hyperperiod_us = table.hyperperiod_us();
+            uint64_t epoch_ns = table.epoch_ns();
+            timer_master.set_schedule_table(slots, hyperperiod_us, epoch_ns);
+            std::cout << "[main] TimerMaster table updated: " << slots.size()
+                      << " slots, hyperperiod=" << hyperperiod_us << "us"
+                      << std::endl;
+        });
+
+        node_client.connect();
         timer_master.start();
 
         // Daemon simply waits for shutdown signal
