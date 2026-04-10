@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <cstdint>
 #include "bpf_loader.h"
 
 namespace timpani {
@@ -34,7 +35,12 @@ private:
 
     BpfLoader& bpf_loader_;
     std::atomic<bool> running_;
+    std::atomic<bool> table_pending_;  // set when new table arrives during idle
     std::thread loop_thread_;
+
+    // POSIX shm for ttsched futex wake (shared with sample_apps libttsched)
+    int shm_fd_;
+    volatile uint32_t* slot_counter_;
 
     std::vector<SlotEntry> slot_table_;
     uint64_t hyperperiod_ns_;

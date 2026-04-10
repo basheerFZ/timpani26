@@ -12,6 +12,7 @@ add_executable(timpani-o
   scheduler_utils.cpp
   hyperperiod_manager.cpp
   orchestrator_service.cpp
+  table_builder.cpp
 )
 
 target_include_directories(timpani-o

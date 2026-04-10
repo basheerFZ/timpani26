@@ -8,14 +8,55 @@
 #include "grpc/node_client.h"
 
 #include <iostream>
+#include <fstream>
 #include <memory>
 #include <csignal>
 #include <unistd.h>
+#include <sched.h>
+#include <errno.h>
+#include <cctype>
+#include <dirent.h>
 
 volatile sig_atomic_t g_shutdown = 0;
 
 void signal_handler(int /* signum */) {
     g_shutdown = 1;
+}
+
+/**
+ * @brief Search /proc for a process with matching comm name.
+ * @param comm  Task comm name (up to 15 chars as in /proc/<pid>/comm)
+ * @return PID on success, -1 if not found
+ */
+static pid_t find_pid_by_comm(const std::string& comm)
+{
+    DIR* proc = opendir("/proc");
+    if (!proc) return -1;
+
+    struct dirent* entry;
+    pid_t found = -1;
+    while ((entry = readdir(proc)) != nullptr) {
+        if (entry->d_type != DT_DIR) continue;
+        bool is_num = true;
+        for (const char* p = entry->d_name; *p; ++p)
+            if (!std::isdigit(static_cast<unsigned char>(*p))) { is_num = false; break; }
+        if (!is_num) continue;
+
+        std::string comm_path = std::string("/proc/") + entry->d_name + "/comm";
+        std::ifstream f(comm_path);
+        if (!f.is_open()) continue;
+
+        std::string proc_comm;
+        std::getline(f, proc_comm);
+        // comm is truncated to 15 chars in the kernel
+        std::string cmp_comm = comm.substr(0, 15);
+        if (proc_comm == cmp_comm || proc_comm == comm) {
+            found = static_cast<pid_t>(std::stoi(entry->d_name));
+            break;
+        }
+    }
+    closedir(proc);
+    return found;
 }
 
 int main(int argc, char** argv) {
@@ -45,8 +86,48 @@ int main(int argc, char** argv) {
 
         // Connect callbacks
         node_client.set_table_callback([&bpf_loader](const auto& table) {
-            // Dummy callback for hot update
-            std::cout << "[main] Received table: " << table.table_id() << std::endl;
+            std::cout << "[main] Received table: " << table.table_id()
+                      << " hyperperiod=" << table.hyperperiod_us() << "us"
+                      << " partitions=" << table.partitions_size() << std::endl;
+
+            for (const auto& partition : table.partitions()) {
+                // Build CPU affinity mask from partition cpuset
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                for (uint32_t cpu : partition.cpuset().cpus())
+                    CPU_SET(cpu, &cpuset);
+
+                for (const auto& layer : partition.layers()) {
+                    for (const auto& slot : layer.tt_slots()) {
+                        const std::string& task_id = slot.task_id();
+                        pid_t pid = find_pid_by_comm(task_id);
+                        if (pid < 0) {
+                            std::cerr << "[main] Task not found in /proc: " << task_id << std::endl;
+                            continue;
+                        }
+
+                        // Apply SCHED_FIFO (priority 20 fixed for Phase 1)
+                        struct sched_param param;
+                        param.sched_priority = 20;
+                        if (sched_setscheduler(pid, SCHED_FIFO, &param) == 0) {
+                            std::cout << "[main] Applied SCHED_FIFO to " << task_id
+                                      << " pid=" << pid << std::endl;
+                        } else {
+                            std::cerr << "[main] sched_setscheduler failed for " << task_id
+                                      << " pid=" << pid << " errno=" << errno << std::endl;
+                        }
+
+                        // Apply CPU affinity
+                        if (sched_setaffinity(pid, sizeof(cpuset), &cpuset) == 0) {
+                            std::cout << "[main] Applied CPU affinity to " << task_id
+                                      << " pid=" << pid << std::endl;
+                        } else {
+                            std::cerr << "[main] sched_setaffinity failed for " << task_id
+                                      << " pid=" << pid << " errno=" << errno << std::endl;
+                        }
+                    }
+                }
+            }
         });
 
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {

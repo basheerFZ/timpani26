@@ -8,15 +8,46 @@
 #include <vector>
 #include <algorithm>
 #include <csignal>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace timpani {
 namespace node {
 
-TimerMaster::TimerMaster(BpfLoader& bpf_loader) : bpf_loader_(bpf_loader), running_(false), hyperperiod_ns_(0), epoch_ns_(0) {
+TimerMaster::TimerMaster(BpfLoader& bpf_loader)
+    : bpf_loader_(bpf_loader), running_(false), table_pending_(false),
+      hyperperiod_ns_(0), epoch_ns_(0), shm_fd_(-1), slot_counter_(nullptr)
+{
+    // Create/open POSIX shm for ttsched futex wake
+    shm_fd_ = shm_open("/timpani_ttsched", O_CREAT | O_RDWR, 0666);
+    if (shm_fd_ >= 0) {
+        ftruncate(shm_fd_, sizeof(uint32_t));
+        slot_counter_ = static_cast<volatile uint32_t*>(
+            mmap(nullptr, sizeof(uint32_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_, 0));
+        if (slot_counter_ == MAP_FAILED) {
+            slot_counter_ = nullptr;
+            std::cerr << "[TimerMaster] shm mmap failed" << std::endl;
+        } else {
+            *slot_counter_ = 0;
+            std::cout << "[TimerMaster] shm /timpani_ttsched created" << std::endl;
+        }
+    } else {
+        std::cerr << "[TimerMaster] shm_open failed" << std::endl;
+    }
+}
 }
 
 TimerMaster::~TimerMaster() {
     stop();
+    if (slot_counter_ && slot_counter_ != MAP_FAILED)
+        munmap(const_cast<uint32_t*>(slot_counter_), sizeof(uint32_t));
+    if (shm_fd_ >= 0)
+        close(shm_fd_);
+    shm_unlink("/timpani_ttsched");
 }
 
 void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots, uint64_t hyperperiod_us, uint64_t epoch_ns) {
@@ -27,6 +58,7 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots, uint64
     std::sort(slot_table_.begin(), slot_table_.end(), [](const SlotEntry& a, const SlotEntry& b) {
         return a.offset_ns < b.offset_ns;
     });
+    table_pending_ = true;  // signal idle loop to restart
 }
 
 void TimerMaster::start() {
@@ -49,32 +81,33 @@ void TimerMaster::thread_loop() {
     std::vector<long long> jitters;
     jitters.reserve(1500);
 
-    if (slot_table_.empty() || hyperperiod_ns_ == 0) {
-        // Fallback or empty table block
-        struct timespec next_ts;
-        clock_gettime(CLOCK_REALTIME, &next_ts);
-        while (running_) {
-            next_ts.tv_nsec += 1000000;
-            if (next_ts.tv_nsec >= 1000000000) { next_ts.tv_sec += 1; next_ts.tv_nsec -= 1000000000; }
-            clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &next_ts, nullptr);
-            
-            // Temporary exit for empty execution loop after 1000 periods
-            if (jitters.size() >= 1000) break;
-        }
-        return;
-    }
-
-    size_t next_slot_idx = 0;
-    uint64_t current_hyperperiod_start = epoch_ns_;
-    if (epoch_ns_ == 0) {
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        current_hyperperiod_start = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
-    }
-
+    // Outer loop: restart slot execution when a new table arrives
     while (running_) {
-        const auto& slot = slot_table_[next_slot_idx];
-        uint64_t target_ns = current_hyperperiod_start + slot.offset_ns;
+        table_pending_ = false;
+
+        if (slot_table_.empty() || hyperperiod_ns_ == 0) {
+            // No table yet — idle loop, wakes every 1ms to check for new table
+            struct timespec next_ts;
+            clock_gettime(CLOCK_REALTIME, &next_ts);
+            while (running_ && !table_pending_) {
+                next_ts.tv_nsec += 1000000;
+                if (next_ts.tv_nsec >= 1000000000) { next_ts.tv_sec += 1; next_ts.tv_nsec -= 1000000000; }
+                clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &next_ts, nullptr);
+            }
+            continue;  // re-evaluate slot_table_ at top of outer loop
+        }
+
+        size_t next_slot_idx = 0;
+        uint64_t current_hyperperiod_start = epoch_ns_;
+        if (epoch_ns_ == 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_REALTIME, &now);
+            current_hyperperiod_start = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+        }
+
+        while (running_ && !table_pending_) {
+            const auto& slot = slot_table_[next_slot_idx];
+            uint64_t target_ns = current_hyperperiod_start + slot.offset_ns;
 
         struct timespec next_ts;
         next_ts.tv_sec = target_ns / 1000000000ULL;
@@ -123,24 +156,28 @@ void TimerMaster::thread_loop() {
             }
             std::cout << "  > 100us outliers: " << outliers << std::endl;
 
-            // Automatically stop the entire system after measurement
-            std::cout << "Measurement complete." << std::endl;
+            std::cout << "Measurement complete. Continuing..." << std::endl;
             jitters.clear();
             jitters.reserve(1500);
         }
-        
-        wake_dummy_tasks();
 
-        next_slot_idx++;
-        if (next_slot_idx >= slot_table_.size()) {
-            next_slot_idx = 0;
-            current_hyperperiod_start += hyperperiod_ns_;
-        }
-    }
-}
+            wake_dummy_tasks();
+
+            next_slot_idx++;
+            if (next_slot_idx >= slot_table_.size()) {
+                next_slot_idx = 0;
+                current_hyperperiod_start += hyperperiod_ns_;
+            }
+        }  // end slot loop
+    }  // end outer loop
+}  // end thread_loop
 
 void TimerMaster::wake_dummy_tasks() {
-    // Option B trigger PoC (omitted full logic)
+    if (!slot_counter_) return;
+    // Increment counter and wake all FUTEX_WAIT waiters
+    __atomic_fetch_add(const_cast<uint32_t*>(slot_counter_), 1, __ATOMIC_SEQ_CST);
+    syscall(SYS_futex, const_cast<uint32_t*>(slot_counter_),
+            FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
 }
 
 } // namespace node

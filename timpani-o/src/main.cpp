@@ -16,6 +16,9 @@
 #include "dbus_server.h"
 #include "node_config.h"
 #include "orchestrator_service.h"
+#include "table_builder.h"
+
+#include <unistd.h>  // gethostname
 
 bool RunSchedInfoServer(int port, std::unique_ptr<SchedInfoServer>& server,
                         std::shared_ptr<NodeConfigManager> node_config_manager)
@@ -186,7 +189,21 @@ int main(int argc, char **argv)
     }
 
     while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        // Check if SchedInfo has been updated and push schedule table to nodes
+        bool changed = false;
+        SchedInfoMap sched_map = sinfo_server->GetSchedInfoMap(&changed);
+        if (changed && !sched_map.empty()) {
+            char hostname_buf[256] = {};
+            gethostname(hostname_buf, sizeof(hostname_buf) - 1);
+            std::string node_id(hostname_buf);
+            TLOG_INFO("SchedInfo changed — building schedule table for node '", node_id, "'");
+            auto table = timpani::orchestrator::BuildScheduleTable(node_id, sched_map);
+            bool ok = g_orchestrator_service->push_full_table(node_id, table);
+            TLOG_INFO("push_full_table(\"", node_id, "\") => ", ok ? "OK" : "FAILED (no node connected yet)");
+        }
+
         if (notify_fault) {
             if (NotifyFaultDemo()) {
                 notify_fault = false; // Reset the flag after notification

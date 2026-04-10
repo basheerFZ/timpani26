@@ -41,6 +41,7 @@ private:
     void reconnect_loop();
 
     std::string server_address_;
+    std::string node_id_;  // hostname — matches Pullpiri convention
     std::shared_ptr<grpc::Channel> channel_;
     std::unique_ptr<timpani::node::v1::OrchestratorService::Stub> stub_;
     std::unique_ptr<grpc::ClientContext> context_;

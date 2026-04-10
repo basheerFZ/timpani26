@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "libttsched.h"
+#include <stdint.h>
 #include <unistd.h>
 #include <linux/futex.h>
 #include <sys/syscall.h>

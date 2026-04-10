@@ -13,6 +13,10 @@ using namespace timpani::node::v1;
 
 NodeClient::NodeClient(const std::string& server_address)
     : server_address_(server_address), running_(false), connected_(false) {
+    char hostname_buf[256] = {};
+    gethostname(hostname_buf, sizeof(hostname_buf) - 1);
+    node_id_ = std::string(hostname_buf);
+    std::cout << "[NodeClient] node_id: " << node_id_ << std::endl;
 }
 
 NodeClient::~NodeClient() {
@@ -78,7 +82,7 @@ void NodeClient::send_ready() {
     if (!connected_) return;
     
     NodeEvent event;
-    event.set_node_id("timpani-n-local");
+    event.set_node_id(node_id_);
     auto* ready = event.mutable_ready();
 
     ready->set_cpu_count(std::thread::hardware_concurrency());
@@ -100,7 +104,7 @@ void NodeClient::send_ready() {
 void NodeClient::send_status() {
     if (!connected_) return;
     NodeEvent event;
-    event.set_node_id("timpani-n-local");
+    event.set_node_id(node_id_);
     event.mutable_status()->set_active_workloads(1);
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (stream_) stream_->Write(event);
@@ -109,7 +113,7 @@ void NodeClient::send_status() {
 void NodeClient::send_fault(const FaultInfo& fault) {
     if (!connected_) return;
     NodeEvent event;
-    event.set_node_id("timpani-n-local");
+    event.set_node_id(node_id_);
     *event.mutable_fault() = fault;
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (stream_) stream_->Write(event);
@@ -118,7 +122,7 @@ void NodeClient::send_fault(const FaultInfo& fault) {
 void NodeClient::send_table_applied(const std::string& table_id, bool success, const std::string& error) {
     if (!connected_) return;
     NodeEvent event;
-    event.set_node_id("timpani-n-local");
+    event.set_node_id(node_id_);
     auto* applied = event.mutable_applied();
     applied->set_table_id(table_id);
     applied->set_success(success);
