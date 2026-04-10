@@ -145,6 +145,8 @@ void TimerMaster::thread_loop()
 
             // C3: Update current slot to map directly
             bpf_loader_.update_current_slot(slot.cpu, slot.slot_idx);
+            // N3: Signal BPF to kick the target CPU for immediate reschedule
+            bpf_loader_.update_kick_cpu(slot.cpu);
 
             jitters.push_back(jitter);
 

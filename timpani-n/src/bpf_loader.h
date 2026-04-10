@@ -24,6 +24,7 @@ public:
     bool update_cbs_state(uint64_t hash, const CbsState& state);
     bool update_task_meta(uint32_t pid, const TaskMeta& meta);
     bool update_current_slot(uint32_t cpu, uint32_t slot_idx);
+    bool update_kick_cpu(uint32_t cpu);
     
     int get_fault_ringbuf_fd() const;
 

@@ -63,6 +63,13 @@ struct {
     __uint(max_entries, 4096 * 16);
 } fault_ringbuf SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 128); // Max CPUs
+    __type(key, __u32);
+    __type(value, __u32);
+} kick_map SEC(".maps");
+
 // SCX helpers (kfuncs) usually predefined if correctly linked, or we can declare them as extern
 extern s32 scx_bpf_create_dsq(__u64 dsq_id, __s32 node) __ksym;
 extern void scx_bpf_dispatch(struct task_struct *p, __u64 dsq_id, u64 slice, u64 enq_flags) __ksym;
@@ -121,6 +128,14 @@ void BPF_PROG(enqueue, struct task_struct *p, u64 enq_flags) {
 SEC("struct_ops/dispatch")
 void BPF_PROG(dispatch, s32 cpu, struct task_struct *prev) {
     __u32 key = cpu;
+
+    /* N3: Check kick_map — userspace signals which CPUs need rescheduling */
+    __u32 *kick_flag = bpf_map_lookup_elem(&kick_map, &key);
+    if (kick_flag && *kick_flag) {
+        *kick_flag = 0;  // Clear the flag
+        scx_bpf_kick_cpu(cpu, 0);
+    }
+
     __u32 *slot_idx = bpf_map_lookup_elem(&current_slot_map, &key);
     if (slot_idx) {
         struct TtSlotKey tt_key = { .cpu = cpu, .slot_idx = *slot_idx };

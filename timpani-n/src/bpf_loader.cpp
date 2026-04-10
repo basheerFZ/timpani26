@@ -67,6 +67,12 @@ bool BpfLoader::update_current_slot(uint32_t cpu, uint32_t slot_idx) {
     return bpf_map_update_elem(bpf_map__fd(skel_->maps.current_slot_map), &cpu, &slot_idx, BPF_ANY) == 0;
 }
 
+bool BpfLoader::update_kick_cpu(uint32_t cpu) {
+    if (!skel_) return false;
+    uint32_t flag = 1;
+    return bpf_map_update_elem(bpf_map__fd(skel_->maps.kick_map), &cpu, &flag, BPF_ANY) == 0;
+}
+
 int BpfLoader::get_fault_ringbuf_fd() const {
     if (!skel_) return -1;
     return bpf_map__fd(skel_->maps.fault_ringbuf);
