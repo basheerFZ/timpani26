@@ -83,8 +83,20 @@ int BPF_PROG(init_task, struct task_struct *p, struct scx_init_task_args *args) 
 
 SEC("struct_ops/select_cpu")
 s32 BPF_PROG(select_cpu, struct task_struct *p, s32 prev_cpu, u64 wake_flags) {
-    // DDR-005 M1 comment: In full implementation, partition_map should be looked up here
-    // to route L1 isolated tasks to specific CPUs. For PoC, simply return prev_cpu.
+    __u32 pid = p->pid;
+    struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
+    if (meta) {
+        struct PartitionInfo *pinfo = bpf_map_lookup_elem(&partition_map, &meta->cgroup_id);
+        if (pinfo && pinfo->cpu_mask != 0) {
+            __u64 mask = pinfo->cpu_mask;
+            /* Manual bit-scan: BPF ISA has no ffs instruction */
+            #pragma unroll
+            for (int i = 0; i < 64; i++) {
+                if (mask & (1ULL << i))
+                    return (s32)i;
+            }
+        }
+    }
     return prev_cpu;
 }
 

@@ -53,6 +53,7 @@ struct TaskMeta {
     __u8  scheduling_type;
     __u8  layer;
     __u64 activation_ns;
+    __u64 cgroup_id;
 };
 
 #define FAULT_DMISS 0

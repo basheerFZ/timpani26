@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <climits>
 #include <csignal>
 #include <iostream>
 #include <vector>
@@ -48,7 +49,7 @@ TimerMaster::TimerMaster(BpfLoader& bpf_loader)
         std::cerr << "[TimerMaster] shm_open failed" << std::endl;
     }
 }
-}
+
 
 TimerMaster::~TimerMaster()
 {

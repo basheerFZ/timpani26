@@ -47,6 +47,7 @@ void TaskRegistry::scan_cgroups() {
                         TaskMeta meta = {};
                         meta.task_id_hash = it->second;
                         meta.scheduling_type = 0; // Default TT for PoC
+                        meta.cgroup_id = cgroup_id;
                         bpf_loader_.update_task_meta(tid, meta);
                         
                         PartitionInfo pinfo = {};
