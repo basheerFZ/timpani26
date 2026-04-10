@@ -21,6 +21,7 @@
 #include <math.h>
 
 #include "sample_apps.h"
+#include "libttsched.h"
 
 #define ALGO_NSQRT	1
 #define ALGO_FIBO	2
@@ -541,6 +542,7 @@ static void print_usage(const char *prog_name) {
     printf("                          Algo 8: prime limit factor (×10K)\n");
     printf("  -s, --stats             Enable detailed statistics (default: enabled)\n");
     printf("  -t, --timer             Use timer-based periodic execution (default: signal-based)\n");
+    printf("  -b, --bpf               Use BPF/TT-Sched futex-based wakeup (timpani26 mode)\n");
     printf("  -h, --help              Show this help message\n");
     printf("\nWorkload Examples:\n");
     printf("  Light CPU workload:\n");
@@ -567,6 +569,7 @@ int main(int argc, char *argv[]) {
 	int pid = getpid();
 	int loop_cnt = 10;
 	bool use_timer = false;
+	bool use_bpf = false;
 
 	/* Initialize task configuration and stats */
 	rt_task_init(&task_config);
@@ -582,12 +585,13 @@ int main(int argc, char *argv[]) {
 		{"loops",     required_argument, 0, 'l'},
 		{"stats",     no_argument,       0, 's'},
 		{"timer",     no_argument,       0, 't'},
+		{"bpf",       no_argument,       0, 'b'},
 		{"help",      no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "p:d:r:P:a:l:sth", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "p:d:r:P:a:l:stbh", long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'p':
 			task_config.period_ms = strtoul(optarg, NULL, 10);
@@ -620,6 +624,9 @@ int main(int argc, char *argv[]) {
 			break;
 		case 't':
 			use_timer = true;
+			break;
+		case 'b':
+			use_bpf = true;
 			break;
 		case 'h':
 			print_usage(argv[0]);
@@ -661,7 +668,9 @@ int main(int argc, char *argv[]) {
 	sigprocmask(SIG_BLOCK, &sig_set, NULL);
 
 	/* Setup periodic execution */
-	if (use_timer) {
+	if (use_bpf) {
+		ttsched_init();
+	} else if (use_timer) {
 		if (setup_periodic_timer(task_config.period_ms) == -1) {
 			fprintf(stderr, "Failed to setup periodic timer\n");
 			return EXIT_FAILURE;
@@ -684,23 +693,29 @@ int main(int argc, char *argv[]) {
 	       algo == ALGO_MIXED ? "Mixed workload" :
 	       algo == ALGO_PRIME ? "Prime calculation" : "Unknown");
 	printf("Loop count:      %d\n", loop_cnt);
-	printf("Execution mode:  %s\n", use_timer ? "Timer-based" : "Signal-based");
+	printf("Execution mode:  %s\n", use_bpf ? "BPF/TT-Sched based" : use_timer ? "Timer-based" : "Signal-based");
 	printf("=====================================\n");
 
-	if (!use_timer) {
+	if (use_bpf) {
+		printf("Using ttsched futex wakeup (/timpani_ttsched SHM)...\n");
+	} else if (!use_timer) {
 		printf("Waiting for signal %d to start periodic execution...\n", signo);
 	}
 
 	while (!shutdown_requested) {
-		if (sigwait(&sig_set, &signal_received) == -1) {
-			if (errno == EINTR) continue;
-			perror("Failed to wait for the signal");
-			break;
-		}
+		if (use_bpf) {
+			ttsched_wait_next_period();
+		} else {
+			if (sigwait(&sig_set, &signal_received) == -1) {
+				if (errno == EINTR) continue;
+				perror("Failed to wait for the signal");
+				break;
+			}
 
-		if (signal_received != signo) {
-			printf("Another signal(%d) is received!!!\n", signal_received);
-			continue;
+			if (signal_received != signo) {
+				printf("Another signal(%d) is received!!!\n", signal_received);
+				continue;
+			}
 		}
 
 		/* Record start time */
