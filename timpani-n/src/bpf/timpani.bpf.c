@@ -119,6 +119,21 @@ void BPF_PROG(enqueue, struct task_struct *p, u64 enq_flags) {
     if (meta->scheduling_type == SCHED_TYPE_TT) {
         scx_bpf_dispatch(p, meta->task_id_hash, SCX_SLICE_DFL, enq_flags);
     } else if (meta->scheduling_type == SCHED_TYPE_CBS) {
+        /* N1: CBS budget check — throttle if budget exhausted */
+        struct CbsState *cbs = bpf_map_lookup_elem(&cbs_map, &meta->task_id_hash);
+        if (cbs) {
+            __u64 now = bpf_ktime_get_ns();
+            /* Check if replenishment is due */
+            if (cbs->remaining_us == 0 && now >= cbs->replenish_at_ns) {
+                cbs->remaining_us = cbs->budget_us;
+                cbs->replenish_at_ns = now + (__u64)cbs->period_us * 1000ULL;
+            }
+            if (cbs->remaining_us == 0) {
+                /* Budget exhausted, throttle to DSQ_THROTTLED */
+                scx_bpf_dispatch(p, DSQ_THROTTLED, SCX_SLICE_DFL, enq_flags);
+                return;
+            }
+        }
         scx_bpf_dispatch(p, DSQ_CBS, SCX_SLICE_DFL, enq_flags);
     } else {
         scx_bpf_dispatch(p, DSQ_BE, SCX_SLICE_DFL, enq_flags);
@@ -159,7 +174,13 @@ void BPF_PROG(running, struct task_struct *p) {
     __u32 pid = p->pid;
     struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
     if (meta) {
-        meta->activation_ns = bpf_ktime_get_ns();
+        __u64 now = bpf_ktime_get_ns();
+        meta->activation_ns = now;
+        /* N1: Record CBS execution start */
+        if (meta->scheduling_type == SCHED_TYPE_CBS) {
+            struct CbsState *cbs = bpf_map_lookup_elem(&cbs_map, &meta->task_id_hash);
+            if (cbs) cbs->exec_start_ns = now;
+        }
     }
 }
 
@@ -167,17 +188,46 @@ SEC("struct_ops/stopping")
 void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
     __u32 pid = p->pid;
     struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
-    
-    // M2: Deadline miss check for TT tasks on yield
-    if (meta && meta->scheduling_type == SCHED_TYPE_TT && !runnable) {
-        __u64 now = bpf_ktime_get_ns();
-        // Dummy deadline assumed as 10ms (10000000ns) for PoC structural mapping
+    if (!meta) return;
+
+    __u64 now = bpf_ktime_get_ns();
+
+    /* N1: CBS budget deduction */
+    if (meta->scheduling_type == SCHED_TYPE_CBS) {
+        struct CbsState *cbs = bpf_map_lookup_elem(&cbs_map, &meta->task_id_hash);
+        if (cbs && cbs->exec_start_ns > 0) {
+            __u64 elapsed_ns = now - cbs->exec_start_ns;
+            __u32 elapsed_us = (__u32)(elapsed_ns / 1000ULL);
+            if (elapsed_us >= cbs->remaining_us)
+                cbs->remaining_us = 0;
+            else
+                cbs->remaining_us -= elapsed_us;
+            cbs->exec_start_ns = 0;
+
+            /* If budget exhausted, emit BUDGET_EXCEED fault */
+            if (cbs->remaining_us == 0) {
+                struct FaultEvent *fault;
+                fault = bpf_ringbuf_reserve(&fault_ringbuf, sizeof(*fault), 0);
+                if (fault) {
+                    fault->fault_type = FAULT_BUDGET_EXCEED;
+                    fault->task_id_hash = meta->task_id_hash;
+                    fault->workload_id_hash = meta->workload_id_hash;
+                    fault->cpu = bpf_get_smp_processor_id();
+                    fault->expected_deadline_ns = cbs->replenish_at_ns;
+                    bpf_ringbuf_submit(fault, 0);
+                }
+            }
+        }
+    }
+
+    /* M2: Deadline miss check for TT tasks on yield */
+    if (meta->scheduling_type == SCHED_TYPE_TT && !runnable) {
         __u64 deadline = meta->activation_ns + 10000000ULL;
         if (now > deadline) {
             struct FaultEvent *fault;
             fault = bpf_ringbuf_reserve(&fault_ringbuf, sizeof(*fault), 0);
             if (fault) {
-                fault->fault_type = 0; // FAULT_DMISS
+                fault->fault_type = FAULT_DMISS;
                 fault->task_id_hash = meta->task_id_hash;
                 fault->workload_id_hash = meta->workload_id_hash;
                 fault->cpu = bpf_get_smp_processor_id();
