@@ -36,9 +36,10 @@ timpani::node::v1::HierarchicalScheduleTable BuildScheduleTable(
     table.set_table_id("table_v1");
     table.set_node_id(node_id);
 
-    // epoch_ns = current monotonic time
+    // epoch_ns = current wall-clock time (CLOCK_REALTIME)
+    // Must match the clock used by timer_master (TIMER_ABSTIME + CLOCK_REALTIME)
     auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::chrono::system_clock::now().time_since_epoch()).count();
     table.set_epoch_ns(static_cast<uint64_t>(now_ns));
 
     // Single partition — CPU 0, non-isolated (Phase 1 verification)

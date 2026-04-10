@@ -52,12 +52,12 @@ else
     warn "OrchestratorService NOT detected on :50060"
 fi
 
-# timpani-n 실행 중인지 확인 (process name)
-if pgrep -x "timpani-n" > /dev/null 2>&1; then
-    ok "timpani-n is running (pid=$(pgrep -x timpani-n))"
+# timpani-n 실행 중인지 확인 (process name — binary is timpani-n-cpp)
+if pgrep -x "timpani-n-cpp" > /dev/null 2>&1; then
+    ok "timpani-n is running (pid=$(pgrep -x timpani-n-cpp))"
 else
     warn "timpani-n NOT running — please start it first"
-    echo "  cd timpani-n/build && sudo ./timpani-n"
+    echo "  cd timpani-n/build && sudo ./timpani-n-cpp"
 fi
 
 # ── 2. mock_pullpiri.py 호출 ─────────────────────────────────────────────────

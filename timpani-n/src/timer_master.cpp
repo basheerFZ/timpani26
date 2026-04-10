@@ -169,11 +169,12 @@ void TimerMaster::thread_loop()
                 std::cout << "  P99: " << jitters[990] << " ns" << std::endl;
                 std::cout << "  P999: " << jitters[999] << " ns" << std::endl;
 
-                std::cout << "\nHistogram (10us buckets):" << std::endl;
+                std::cout << "\nHistogram (10us buckets, absolute jitter):" << std::endl;
                 int buckets[10] = {0};  // 0-10us, 10-20us...
                 int outliers = 0;
                 for (long long j : jitters) {
-                    int bucket_idx = j / 10000;
+                    long long abs_j = j < 0 ? -j : j;  // absolute jitter
+                    int bucket_idx = (int)(abs_j / 10000);
                     if (bucket_idx >= 0 && bucket_idx < 10)
                         buckets[bucket_idx]++;
                     else
