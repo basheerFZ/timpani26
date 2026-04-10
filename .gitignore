@@ -137,3 +137,6 @@ sample-apps/build/
 
 # Auto-generated BPF vmlinux.h
 **/vmlinux.h
+
+# Agent coordination files (managed in dev/sh-agent-md only)
+.agent/
