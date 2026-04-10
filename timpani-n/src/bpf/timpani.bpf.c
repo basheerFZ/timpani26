@@ -220,9 +220,18 @@ void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
         }
     }
 
-    /* M2: Deadline miss check for TT tasks on yield */
+    /* N4: Deadline miss check for TT tasks — lookup from tt_table_map */
     if (meta->scheduling_type == SCHED_TYPE_TT && !runnable) {
-        __u64 deadline = meta->activation_ns + 10000000ULL;
+        __u32 cpu_key = bpf_get_smp_processor_id();
+        __u32 *slot_idx = bpf_map_lookup_elem(&current_slot_map, &cpu_key);
+        __u64 deadline_ns = 10000000ULL; /* 10ms fallback */
+        if (slot_idx) {
+            struct TtSlotKey tt_key = { .cpu = (__u32)cpu_key, .slot_idx = *slot_idx };
+            struct TtSlotBpf *slot = bpf_map_lookup_elem(&tt_table_map, &tt_key);
+            if (slot && slot->deadline_us > 0)
+                deadline_ns = (__u64)slot->deadline_us * 1000ULL;
+        }
+        __u64 deadline = meta->activation_ns + deadline_ns;
         if (now > deadline) {
             struct FaultEvent *fault;
             fault = bpf_ringbuf_reserve(&fault_ringbuf, sizeof(*fault), 0);
@@ -230,7 +239,7 @@ void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
                 fault->fault_type = FAULT_DMISS;
                 fault->task_id_hash = meta->task_id_hash;
                 fault->workload_id_hash = meta->workload_id_hash;
-                fault->cpu = bpf_get_smp_processor_id();
+                fault->cpu = cpu_key;
                 fault->expected_deadline_ns = deadline;
                 bpf_ringbuf_submit(fault, 0);
             }
