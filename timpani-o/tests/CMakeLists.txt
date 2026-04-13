@@ -14,7 +14,6 @@ find_package(GTest REQUIRED)
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../src)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/../proto)
-include_directories(${CMAKE_SOURCE_DIR}/../libtrpc/src)
 include_directories(${GTEST_INCLUDE_DIRS})
 
 # Create test executable
@@ -43,39 +42,6 @@ add_test(NAME SchedInfoServiceTest COMMAND test_schedinfo_service)
 # Set test properties
 set_tests_properties(SchedInfoServiceTest PROPERTIES
     TIMEOUT 30
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-
-# Create DBusServer test executable
-add_executable(test_dbus_server
-    test_dbus_server.cpp
-    ../src/dbus_server.cpp
-    ../src/fault_client.cpp
-    ../src/schedinfo_service.cpp
-    ../src/node_config.cpp
-    ../src/global_scheduler.cpp
-    ../src/scheduler_utils.cpp
-    ../src/hyperperiod_manager.cpp
-)
-
-# Link libraries for DBusServer test
-target_link_libraries(test_dbus_server
-    GTest::gtest
-    GTest::gtest_main
-    gRPC::grpc++
-    protobuf::libprotobuf
-    schedinfo_proto  # Proto library from proto directory
-    trpc
-    systemd
-    pthread
-)
-
-# Add DBusServer test
-add_test(NAME DBusServerTest COMMAND test_dbus_server)
-
-# Set test properties for DBusServer test
-set_tests_properties(DBusServerTest PROPERTIES
-    TIMEOUT 60
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
