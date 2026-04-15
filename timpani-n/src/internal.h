@@ -263,9 +263,9 @@ struct time_trigger {
     timer_t timer;
     struct task_info task;
 #ifdef CONFIG_TRACE_BPF
-    uint64_t sigwait_ts;
-    uint64_t sigwait_ts_prev;
-    uint8_t sigwait_enter;
+    atomic_uint_fast64_t sigwait_ts;
+    atomic_uint_fast64_t sigwait_ts_prev;
+    atomic_uchar sigwait_enter;
 #endif
     struct timespec prev_timer;
     struct context *ctx;      // context pointer

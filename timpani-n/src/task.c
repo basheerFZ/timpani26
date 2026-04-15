@@ -25,6 +25,11 @@ static struct time_trigger *task_create_node(struct task_info *ti, struct worklo
     memcpy(&tt_node->task, ti, sizeof(tt_node->task));
     tt_node->ctx = wl->ctx;       // set context pointer
     tt_node->workload = wl;       // set owning workload pointer
+#ifdef CONFIG_TRACE_BPF
+    atomic_init(&tt_node->sigwait_ts, 0);
+    atomic_init(&tt_node->sigwait_ts_prev, 0);
+    atomic_init(&tt_node->sigwait_enter, 0);
+#endif
     return tt_node;
 }
 
