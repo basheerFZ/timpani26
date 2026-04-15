@@ -186,16 +186,21 @@ int main(int argc, char** argv)
         bool changed = false;
         SchedInfoMap sched_map = sinfo_server->GetSchedInfoMap(&changed);
         if (changed && !sched_map.empty()) {
-            char hostname_buf[256] = {};
-            gethostname(hostname_buf, sizeof(hostname_buf) - 1);
-            std::string node_id(hostname_buf);
-            TLOG_INFO("SchedInfo changed — building schedule table for node '",
-                      node_id, "'");
-            auto table =
-                timpani::orchestrator::BuildScheduleTable(node_id, sched_map);
-            bool ok = g_orchestrator_service->push_full_table(node_id, table);
-            TLOG_INFO("push_full_table(\"", node_id, "\") => ",
-                      ok ? "OK" : "FAILED (no node connected yet)");
+            // Get all connected nodes and push schedule table to each
+            auto connected_nodes = g_orchestrator_service->get_connected_node_ids();
+            if (connected_nodes.empty()) {
+                TLOG_WARN("SchedInfo changed but no nodes connected yet");
+            } else {
+                for (const auto& node_id : connected_nodes) {
+                    TLOG_INFO("SchedInfo changed — building schedule table for node '",
+                              node_id, "'");
+                    auto table =
+                        timpani::orchestrator::BuildScheduleTable(node_id, sched_map);
+                    bool ok = g_orchestrator_service->push_full_table(node_id, table);
+                    TLOG_INFO("push_full_table(\"", node_id, "\") => ",
+                              ok ? "OK" : "FAILED");
+                }
+            }
         }
 
         if (notify_fault) {

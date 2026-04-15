@@ -105,5 +105,15 @@ bool OrchestratorServiceImpl::push_update(const std::string& node_id, const Sche
     return false;
 }
 
+std::vector<std::string> OrchestratorServiceImpl::get_connected_node_ids() {
+    std::lock_guard<std::mutex> lock(nodes_mutex_);
+    std::vector<std::string> ids;
+    ids.reserve(connected_nodes_.size());
+    for (const auto& pair : connected_nodes_) {
+        ids.push_back(pair.first);
+    }
+    return ids;
+}
+
 } // namespace orchestrator
 } // namespace timpani

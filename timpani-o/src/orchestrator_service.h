@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace timpani {
 namespace orchestrator {
@@ -25,6 +26,7 @@ public:
 
     bool push_full_table(const std::string& node_id, const HierarchicalScheduleTable& table);
     bool push_update(const std::string& node_id, const ScheduleTableUpdate& update);
+    std::vector<std::string> get_connected_node_ids();
 
 private:
     struct ConnectedNode {
