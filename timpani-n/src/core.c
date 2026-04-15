@@ -64,8 +64,8 @@ tt_error_t handle_sigwait_bpf_event(void *ctx, void *data, size_t len)
     LIST_FOREACH(wl, &ctx_struct->runtime.workloads, entry) {
         LIST_FOREACH(tt_p, &wl->tt_list, entry) {
             if (tt_p->task.pid == e->pid) {
-                tt_p->sigwait_ts = bpf_ktime_to_real(e->timestamp);
-                tt_p->sigwait_enter = e->enter;
+                atomic_store_explicit(&tt_p->sigwait_ts, bpf_ktime_to_real(e->timestamp), memory_order_release);
+                atomic_store_explicit(&tt_p->sigwait_enter, (unsigned char)e->enter, memory_order_release);
                 return TT_SUCCESS;
             }
         }
@@ -201,12 +201,15 @@ void timer_expired_handler(union sigval value)
 
 #ifdef CONFIG_TRACE_BPF
     /* Check whether there is a deadline miss or not */
-    if (tt_node->sigwait_ts) {
+    uint64_t sigwait_ts = atomic_load_explicit(&tt_node->sigwait_ts, memory_order_acquire);
+    if (sigwait_ts) {
+        uint8_t sigwait_enter = atomic_load_explicit(&tt_node->sigwait_enter, memory_order_acquire);
+        uint64_t sigwait_ts_prev = atomic_load_explicit(&tt_node->sigwait_ts_prev, memory_order_acquire);
         uint64_t deadline_ns = ts_ns(before);
-        int64_t deadline_diff_ns = (int64_t)tt_node->sigwait_ts - (int64_t)deadline_ns;
+        int64_t deadline_diff_ns = (int64_t)sigwait_ts - (int64_t)deadline_ns;
 
         // Check if this task is still running
-        if (!tt_node->sigwait_enter) {
+        if (!sigwait_enter) {
             TT_LOG_ERROR("!!! DEADLINE MISS: STILL OVERRUN %s(%d): deadline %lu !!!",
                 task->name, task->pid, deadline_ns);
             tt_node->workload->hp_manager.total_deadline_misses++;
@@ -226,11 +229,11 @@ void timer_expired_handler(union sigval value)
                 TT_LOG_WARNING("Failed to report deadline miss for task %s", task->name);
             }
         // Check if this task is stuck at kernel sigwait syscall handler
-        } else if (tt_node->sigwait_ts == tt_node->sigwait_ts_prev) {
+        } else if (sigwait_ts == sigwait_ts_prev) {
             TT_LOG_ERROR("!!! DEADLINE MISS: STUCK AT KERNEL %s(%d): %lu & deadline %lu !!!",
-                task->name, task->pid, tt_node->sigwait_ts, deadline_ns);
-            TT_LOG_ERROR("%s: Deadline miss (stuck): %lu diff",
-                task->name, tt_node->sigwait_ts - deadline_ns);
+                task->name, task->pid, sigwait_ts, deadline_ns);
+            TT_LOG_ERROR("%s: Deadline miss (stuck): %lld ns diff",
+                task->name, (long long)deadline_diff_ns);
             tt_node->workload->hp_manager.total_deadline_misses++;
             tt_node->workload->hp_manager.cycle_deadline_misses++;
             if (report_deadline_miss(ctx, task->name) != TT_SUCCESS) {
@@ -238,7 +241,7 @@ void timer_expired_handler(union sigval value)
             }
         }
 
-        tt_node->sigwait_ts_prev = tt_node->sigwait_ts;
+        atomic_store_explicit(&tt_node->sigwait_ts_prev, sigwait_ts, memory_order_release);
     }
 #endif
 
