@@ -119,4 +119,63 @@ cd build
 sudo ./timpani-n
 ```
 
+## Systemd Service (Production Deployment)
+
+For production deployment, timpani-n should run as a systemd service.
+
+### Installation
+
+```bash
+# Install binary
+sudo cp build/timpani-n /usr/local/bin/
+
+# Install configuration
+sudo mkdir -p /etc/timpani
+sudo cp timpani-n.conf /etc/timpani/
+
+# Install and enable service
+sudo cp timpani-n.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable timpani-n
+```
+
+### Configuration
+
+Edit `/etc/timpani/timpani-n.conf`:
+
+```bash
+# Orchestrator connection
+ORCHESTRATOR_HOST=192.168.1.100   # timpani-o host
+ORCHESTRATOR_PORT=50060
+
+# Node identity (empty = use hostname)
+NODE_ID=node1
+```
+
+### Service Management
+
+```bash
+# Start/stop/restart
+sudo systemctl start timpani-n
+sudo systemctl stop timpani-n
+sudo systemctl restart timpani-n
+
+# Check status and logs
+sudo systemctl status timpani-n
+journalctl -u timpani-n -f
+```
+
+### Required Capabilities
+
+timpani-n requires the following Linux capabilities:
+
+| Capability | Purpose |
+|:--|:--|
+| `CAP_BPF` | Load BPF programs |
+| `CAP_SYS_ADMIN` | sched_ext, BPF map operations |
+| `CAP_SYS_NICE` | Real-time priority (SCHED_FIFO) |
+| `CAP_SYS_RESOURCE` | setrlimit for memlock |
+
+These are configured in the systemd unit file.
+
 ***
