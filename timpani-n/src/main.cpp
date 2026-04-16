@@ -3,11 +3,13 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <getopt.h>
 #include <sched.h>
 #include <unistd.h>
 
 #include <cctype>
 #include <csignal>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -21,6 +23,89 @@
 volatile sig_atomic_t g_shutdown = 0;
 
 void signal_handler(int /* signum */) { g_shutdown = 1; }
+
+namespace {
+struct RuntimeOptions {
+    std::string orchestrator_host = "127.0.0.1";
+    int orchestrator_port = 50060;
+    std::string node_id_override;
+    bool show_help = false;
+};
+
+void print_usage(const char* prog)
+{
+    std::cerr
+        << "Usage: " << prog << " [options] [orchestrator_host]\n"
+        << "Options:\n"
+        << "  -p <port>   Orchestrator gRPC port (default: 50060)\n"
+        << "  -n <name>   Node ID override (default: hostname)\n"
+        << "  -l <level>  (compat) log level flag accepted but handled elsewhere\n"
+        << "  -P <prio>   (compat) RT priority flag accepted but handled elsewhere\n"
+        << "  -g          (compat) accepted\n"
+        << "  -s          (compat) accepted\n"
+        << "  -h          Show this help\n";
+}
+
+bool parse_port(const char* text, int& port_out)
+{
+    if (!text || *text == '\0') return false;
+
+    char* end = nullptr;
+    long parsed = std::strtol(text, &end, 10);
+    if (end == text || *end != '\0') return false;
+    if (parsed < 1 || parsed > 65535) return false;
+
+    port_out = static_cast<int>(parsed);
+    return true;
+}
+
+bool parse_runtime_options(int argc, char** argv, RuntimeOptions& options)
+{
+    opterr = 0;
+    int opt;
+    while ((opt = getopt(argc, argv, "hn:p:l:P:gs")) != -1) {
+        switch (opt) {
+            case 'h':
+                options.show_help = true;
+                return true;
+            case 'n':
+                options.node_id_override = optarg ? std::string(optarg) : "";
+                break;
+            case 'p':
+                if (!parse_port(optarg, options.orchestrator_port)) {
+                    std::cerr << "Invalid orchestrator port: "
+                              << (optarg ? optarg : "<null>") << std::endl;
+                    return false;
+                }
+                break;
+            case 'l':
+            case 'P':
+                // Compatibility option: accepted for legacy launch scripts.
+                break;
+            case 'g':
+            case 's':
+                // Compatibility flags: accepted for legacy launch scripts.
+                break;
+            case '?':
+            default:
+                std::cerr << "Unknown option: -" << static_cast<char>(optopt)
+                          << std::endl;
+                return false;
+        }
+    }
+
+    if (optind < argc) {
+        options.orchestrator_host = argv[optind++];
+    }
+
+    if (optind < argc) {
+        std::cerr << "Unexpected extra arguments." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+}  // namespace
 
 /**
  * @brief Search /proc for a process with matching comm name.
@@ -63,11 +148,31 @@ static pid_t find_pid_by_comm(const std::string& comm)
 
 int main(int argc, char** argv)
 {
+    RuntimeOptions runtime_options;
+    if (!parse_runtime_options(argc, argv, runtime_options)) {
+        print_usage(argv[0]);
+        return 2;
+    }
+    if (runtime_options.show_help) {
+        print_usage(argv[0]);
+        return 0;
+    }
+
+    const std::string orchestrator_endpoint =
+        runtime_options.orchestrator_host + ":" +
+        std::to_string(runtime_options.orchestrator_port);
+
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     std::cout << "Starting TIMPANI Node Executor (timpani-n C++ rework)..."
               << std::endl;
+    std::cout << "[main] Orchestrator endpoint: " << orchestrator_endpoint
+              << std::endl;
+    if (!runtime_options.node_id_override.empty()) {
+        std::cout << "[main] Node ID override: "
+                  << runtime_options.node_id_override << std::endl;
+    }
 
     try {
         // 1. Initialize BPF Loader and ensure safe termination
@@ -86,7 +191,8 @@ int main(int argc, char** argv)
         fault_monitor.set_ringbuf_fd(bpf_loader.get_fault_ringbuf_fd());
 
         // Initialize NodeClient (gRPC)
-        timpani::node::NodeClient node_client("127.0.0.1:50060");
+        timpani::node::NodeClient node_client(
+            orchestrator_endpoint, runtime_options.node_id_override);
 
         // Connect callbacks
         node_client.set_table_callback([&bpf_loader](const auto& table) {

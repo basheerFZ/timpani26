@@ -26,7 +26,8 @@ class NodeClient
         std::function<void(const timpani::node::v1::ScheduleTableUpdate&)>;
     using ShutdownCallback = std::function<void(uint32_t grace_period_ms)>;
 
-    explicit NodeClient(const std::string& server_address);
+    explicit NodeClient(const std::string& server_address,
+              const std::string& node_id_override = "");
     ~NodeClient();
 
     void set_table_callback(TableCallback cb);
