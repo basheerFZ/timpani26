@@ -90,6 +90,12 @@ FROM alpine:3.21
 ARG TARGETARCH
 ENV TARGETARCH=${TARGETARCH}
 
+# Re-declare VERSION so it is available in the final stage (ARG scope is per stage)
+ARG VERSION=2026.04.1
+LABEL version="${VERSION}" \
+      project="timpani" \
+      component="timpani-o"
+
 WORKDIR /timpani-o
 
 # Copy shared libraries from builder

@@ -64,6 +64,14 @@ FROM alpine:3.21
 ARG TARGETARCH
 ENV TARGETARCH=${TARGETARCH}
 
+# Re-declare VERSION/GIT_COMMIT_HASH so they are available in the final stage (ARG scope is per stage)
+ARG VERSION=2026.04.1
+ARG GIT_COMMIT_HASH=unknown
+LABEL version="${VERSION}" \
+      git.commit="${GIT_COMMIT_HASH}" \
+      project="timpani" \
+      component="sample-apps"
+
 WORKDIR /sample-apps
 
 # Copy shared libraries from builder
