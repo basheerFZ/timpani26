@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+
+#################################
+# === Build Stage ===
+#################################
+FROM alpine:3.21 AS builder
+
+
+# Install build dependencies
+RUN apk update && apk add --no-cache \
+    build-base \
+    cmake \
+    git \
+    pkgconf \
+    grpc-dev \
+    grpc-plugins \
+    protobuf-dev \
+    re2-dev
+
+# Ensure we have the parent structure so ../VERSION is found by CMake
+WORKDIR /
+# Copy root VERSION file
+COPY VERSION /VERSION
+# Copy source code
+COPY timpani-o /timpani-o/
+
+WORKDIR /timpani-o
+
+# Build timpani-o natively on Alpine (musl libc)
+RUN rm -rf build && mkdir -p build && cd build && \
+    cmake .. && \
+    make -j$(nproc)
+
+#################################
+# === Runtime Stage ===
+#################################
+FROM alpine:3.21
+
+
+# Install ONLY runtime dependencies
+RUN apk update && apk add --no-cache \
+    grpc-cpp \
+    protobuf \
+    re2 \
+    libstdc++ \
+    libgcc
+
+WORKDIR /timpani-o
+
+# Copy built binary (dynamically linked to musl libc, no bulky glibc needed!)
+COPY --from=builder /timpani-o/build/timpani-o /timpani-o/
+
+# Copy example configuration
+COPY --from=builder /timpani-o/examples/node_configurations.yaml /timpani-o/examples/
+
+# Expose ports
+# 50052: gRPC SchedInfoServer (Pullpiri -> timpani-o)
+# 50060: gRPC OrchestratorServer (timpani-n <-> timpani-o)
+EXPOSE 50052 50060
+
+# Environment variables for configuration
+ENV SINFO_PORT=50052
+ENV ORCHESTRATOR_PORT=50060
+ENV FAULT_HOST=localhost
+ENV FAULT_PORT=50053
+
+ENTRYPOINT ["/timpani-o/timpani-o"]
+CMD ["-s", "50052"]
