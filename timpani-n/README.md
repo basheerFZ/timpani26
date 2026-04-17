@@ -52,10 +52,10 @@ Time-Triggered Workloads (sample-apps, etc.)
 
 ```bash
 # Debian/Ubuntu
-sudo apt install ./timpani-n_2026.04.0_x86_64.deb
+sudo apt install ./timpani-n_2026.04.1_x86_64.deb
 
 # RedHat/CentOS
-sudo dnf install ./timpani-n-2026.04.0-1.x86_64.rpm
+sudo dnf install ./timpani-n-2026.04.1-1.x86_64.rpm
 
 # Configure and start
 sudo vi /etc/timpani/timpani-n.conf
@@ -119,8 +119,20 @@ sudo dnf install -y grpc-devel protobuf-devel
 git clone --recurse-submodules https://github.com/MCO-PICCOLO/TIMPANI.git
 cd TIMPANI/timpani-n
 mkdir build && cd build
-cmake ..
-make
+
+# Local build — Git hash is auto-detected from the repo
+cmake .. && make
+
+# CI / package build — no git history available, pass explicitly
+VERSION=$(cat ../../VERSION)
+GIT_HASH=$(git rev-parse --short HEAD)
+cmake -DGIT_COMMIT_HASH=$GIT_HASH .. && make
+
+# Verify
+./timpani-n -V
+# timpani-n version 2026.4.1
+#   Git commit: abc1234
+#   Build time: 2026-04-17 06:00:00 UTC
 ```
 
 ### Build Options
@@ -155,14 +167,23 @@ cd build
 
 # Debian/Ubuntu
 cpack -G DEB
-# Output: timpani-n_2026.04.0_x86_64.deb
+# Output: timpani-n_2026.04.1_x86_64.deb
 
 # RedHat/CentOS
 cpack -G RPM
-# Output: timpani-n-2026.04.0-1.x86_64.rpm
+# Output: timpani-n-2026.04.1-1.x86_64.rpm
 
 # Tarball
 cpack -G TGZ
+```
+
+The version in the package filename and the version embedded in the binary both come from the root `VERSION` file at build time. Verify after installation:
+
+```bash
+timpani-n -V
+# timpani-n version 2026.4.1
+#   Git commit: abc1234
+#   Build time: 2026-04-17 06:00:00 UTC
 ```
 
 The package includes:
@@ -178,12 +199,12 @@ The package includes:
 
 **Debian/Ubuntu:**
 ```bash
-sudo apt install ./timpani-n_2026.04.0_x86_64.deb
+sudo apt install ./timpani-n_2026.04.1_x86_64.deb
 ```
 
 **RedHat/CentOS:**
 ```bash
-sudo dnf install ./timpani-n-2026.04.0-1.x86_64.rpm
+sudo dnf install ./timpani-n-2026.04.1-1.x86_64.rpm
 ```
 
 The package automatically:

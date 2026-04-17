@@ -49,14 +49,20 @@ TIMPANI-N (Node Executor)
 ```bash
 cd timpani-o
 
-# Build
-podman build -t timpani-o:latest .
+# Build with version info
+VERSION=$(cat ../VERSION)
+podman build --build-arg VERSION=$VERSION \
+  -t timpani-o:$VERSION .
+
+# Verify version label
+podman inspect timpani-o:$VERSION --format '{{index .Config.Labels "version"}}'
+# 2026.04.1
 
 # Run (mount examples/node_configurations.yaml)
 podman run -d --name timpani-o \
   -p 50052:50052 -p 50060:50060 \
   -v $(pwd)/examples/node_configurations.yaml:/config/node_configurations.yaml:ro \
-  timpani-o:latest \
+  timpani-o:$VERSION \
   -c /config/node_configurations.yaml
 ```
 
@@ -118,9 +124,19 @@ cpack -G DEB   # or RPM, TGZ
 
 ### Container Build
 
+timpani-o embeds version as a container image **label** (not in the binary).
+`GIT_COMMIT_HASH` is not supported — pass `VERSION` only.
+
 ```bash
 cd timpani-o
-podman build -t timpani-o:latest .
+
+# Build with version info
+VERSION=$(cat ../VERSION)
+podman build --build-arg VERSION=$VERSION \
+  -t timpani-o:$VERSION .
+
+# Verify version label
+podman inspect timpani-o:$VERSION --format '{{index .Config.Labels "version"}}'
 ```
 
 ---
