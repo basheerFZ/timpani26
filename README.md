@@ -32,42 +32,9 @@ cd TIMPANI
 
 > **Note:** Use `--recurse-submodules` to automatically clone the required submodules (libbpf, etc.).
 
-Refer to the individual component READMEs below for specific build and setup instructions.
+All binaries embed version, Git commit hash, and build timestamp at compile time (`-V` / `--version`). See [Version Management](doc/VERSIONING.md) for the versioning policy and release process.
 
-### Versioned Build
-
-All binaries embed version, Git commit hash, and build timestamp for traceability:
-
-```bash
-# timpani-n
-cd timpani-n && mkdir build && cd build
-cmake .. && make
-./timpani-n -V
-# timpani-n version 2026.4.1
-#   Git commit: abc1234
-#   Build time: 2026-04-17 06:00:00 UTC
-
-# sample-apps
-cd sample-apps && mkdir build && cd build
-cmake .. && make
-./sample_apps --version
-# sample_apps version 2026.4.1
-#   Git commit: abc1234
-#   Build time: 2026-04-17 06:00:00 UTC
-```
-
-### Container Build with Version
-
-```bash
-cd sample-apps
-VERSION=$(cat ../VERSION)
-GIT_HASH=$(git rev-parse --short HEAD)
-podman build --build-arg VERSION=$VERSION --build-arg GIT_COMMIT_HASH=$GIT_HASH \
-  -t sample-apps:$VERSION .
-
-# Verify version inside container
-podman run --rm sample-apps:$VERSION --version
-```
+Refer to the individual component READMEs below for build and setup instructions.
 
 ## Components
 
@@ -117,51 +84,16 @@ Rust ports of TIMPANI components with enhanced type safety and memory safety.
 #### [Rust TIMPANI-N (Node Executor)](timpani_rust/timpani-n/README.md)
 Rust implementation of the node executor with comprehensive CLI interface, configuration validation, and structured logging. **Status**: Configuration parsing complete, runtime features in development.
 
-**Quick Build:**
-```bash
-cd timpani_rust/timpani-n
-cargo build --release
-cargo test  # Run tests
-```
-*For detailed setup, usage examples, and current status → [Full Documentation](timpani_rust/timpani-n/README.md)*
+*For setup, usage examples, and current status → [Full Documentation](timpani_rust/timpani-n/README.md)*
 
 #### [Rust TIMPANI-O (Node Scheduler)](timpani_rust/timpani-o/)
 Rust implementation of the global scheduler component. **Status**: In development.
 
-**Quick Build:**
-```bash
-cd timpani_rust/timpani-o
-cargo build --release
-cargo test  # Run tests
-```
-*For detailed setup and current development status → [Full Documentation](timpani_rust/timpani-o/README.md)*
+*For setup and current development status → [Full Documentation](timpani_rust/timpani-o/README.md)*
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 📖 Documentation Structure
-
-```
-TIMPANI/
-├── README.md                    # This file - main project overview
-├── sample-apps/
-│   ├── README.md               # Sample applications documentation
-├── timpani-n/
-│   ├── README.md               # C implementation: Node executor
-│   ├── README.CentOS.md       # CentOS setup guide
-│   └── README.Ubuntu20.md     # Ubuntu setup guide
-├── timpani-o/
-│   └── README.md               # C implementation: Node scheduler
-└── timpani_rust/
-    ├── README.md               # Rust components overview
-    ├── timpani-n/
-    │   └── README.md           # Rust node executor (config parsing complete)
-    └── timpani-o/
-        └── README.md           # Rust node scheduler (in development)
-```
-
-
 
 ---
 

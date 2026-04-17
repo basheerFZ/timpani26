@@ -266,6 +266,7 @@ Usage: timpani-n [options] [orchestrator_host]
 Options:
   -n <name>   Node ID override (default: hostname)
   -p <port>   Orchestrator gRPC port (default: 50060)
+  -V          Print version, Git commit, and build timestamp
   -h          Show help
 ```
 
