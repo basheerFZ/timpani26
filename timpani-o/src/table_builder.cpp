@@ -42,13 +42,13 @@ timpani::node::v1::HierarchicalScheduleTable BuildScheduleTable(
         std::chrono::system_clock::now().time_since_epoch()).count();
     table.set_epoch_ns(static_cast<uint64_t>(now_ns));
 
-    // Single partition — CPU 0, non-isolated (Phase 1 verification)
+    // Single partition — CPUs derived from GlobalScheduler assignments
     PartitionConfig* partition = table.add_partitions();
     partition->set_partition_id("p0");
 
     CpuSetSpec* cpuset = partition->mutable_cpuset();
-    cpuset->add_cpus(0);
     cpuset->set_isolated(false);
+    // cpuset.cpus populated per-task below
 
     LayerConfig* layer = partition->add_layers();
     layer->set_layer_index(1);
@@ -87,10 +87,20 @@ timpani::node::v1::HierarchicalScheduleTable BuildScheduleTable(
             slot->set_task_id(task.task_name);
             slot->set_workload_id_hash(fnv1a_hash(wl_id.c_str()));
             slot->set_task_id_hash(fnv1a_hash(task.task_name));
+            uint32_t assigned_cpu = static_cast<uint32_t>(task.cpu_affinity);
+
             slot->set_offset_us(offset_us);
             slot->set_duration_us(duration_us);
             slot->set_deadline_us(deadline_us);
-            slot->set_cpu(0);  // Phase 1: CPU 0 fixed
+            slot->set_cpu(assigned_cpu);
+
+            // Add CPU to partition cpuset if not already present
+            bool already_in_cpuset = false;
+            for (int c = 0; c < cpuset->cpus_size(); ++c) {
+                if (cpuset->cpus(c) == assigned_cpu) { already_in_cpuset = true; break; }
+            }
+            if (!already_in_cpuset)
+                cpuset->add_cpus(assigned_cpu);
 
             offset_us += duration_us + 100u;  // 100 us inter-slot gap
 
@@ -98,7 +108,8 @@ timpani::node::v1::HierarchicalScheduleTable BuildScheduleTable(
                 hyperperiod = period_us;
 
             TLOG_DEBUG("BuildScheduleTable: slot[", total_slots, "] task=", task.task_name,
-                       " offset=", slot->offset_us(), "us duration=", duration_us, "us");
+                       " offset=", slot->offset_us(), "us duration=", duration_us,
+                       "us cpu=", assigned_cpu);
             ++total_slots;
         }
     }
