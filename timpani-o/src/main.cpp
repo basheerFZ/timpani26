@@ -9,8 +9,11 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <algorithm>
+#include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include "fault_client.h"
 #include "node_config.h"
@@ -179,26 +182,132 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
+    // Replay scheduler state when:
+    // 1) sched_map changes, or
+    // 2) nodes connect/reconnect after schedule generation.
+    bool replay_pending = false;
+    bool warned_no_nodes_for_replay = false;
+    std::set<std::string> known_connected_nodes;
+    std::set<std::string> synced_nodes;
+    std::unordered_map<std::string, int> replay_failures;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        next_retry_time;
+    const auto kRetryBaseDelay = std::chrono::milliseconds(500);
+    const auto kRetryMaxDelay = std::chrono::seconds(8);
+    constexpr int kRetryBackoffMaxShift = 4;
+
     while (true) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-        // Check if SchedInfo has been updated and push schedule table to nodes
+        // Check if SchedInfo has been updated and queue replay as needed.
         bool changed = false;
         SchedInfoMap sched_map = sinfo_server->GetSchedInfoMap(&changed);
-        if (changed && !sched_map.empty()) {
-            // Get all connected nodes and push schedule table to each
-            auto connected_nodes = g_orchestrator_service->get_connected_node_ids();
-            if (connected_nodes.empty()) {
-                TLOG_WARN("SchedInfo changed but no nodes connected yet");
+
+        auto connected_nodes_vec = g_orchestrator_service->get_connected_node_ids();
+        std::set<std::string> connected_nodes(connected_nodes_vec.begin(),
+                                              connected_nodes_vec.end());
+
+        // Remove sync marks for disconnected nodes.
+        for (const auto& node_id : known_connected_nodes) {
+            if (connected_nodes.find(node_id) == connected_nodes.end()) {
+                synced_nodes.erase(node_id);
+                replay_failures.erase(node_id);
+                next_retry_time.erase(node_id);
+            }
+        }
+
+        // New or reconnected nodes should receive the latest schedule snapshot.
+        for (const auto& node_id : connected_nodes) {
+            if (known_connected_nodes.find(node_id) == known_connected_nodes.end()) {
+                replay_pending = true;
+                synced_nodes.erase(node_id);
+                replay_failures.erase(node_id);
+                next_retry_time.erase(node_id);
+                TLOG_INFO("Node connected/reconnected - schedule replay queued for '",
+                          node_id, "'");
+            }
+        }
+        known_connected_nodes = connected_nodes;
+
+        if (changed) {
+            replay_pending = true;
+            synced_nodes.clear();
+            replay_failures.clear();
+            next_retry_time.clear();
+            if (sched_map.empty()) {
+                TLOG_WARN("SchedInfo marked changed but map is empty");
             } else {
+                TLOG_INFO("SchedInfo changed - replay queued for all connected nodes");
+            }
+        }
+
+        if (replay_pending && !sched_map.empty()) {
+            if (connected_nodes.empty()) {
+                if (!warned_no_nodes_for_replay) {
+                    TLOG_WARN("SchedInfo available but no nodes connected yet");
+                    warned_no_nodes_for_replay = true;
+                }
+            } else {
+                warned_no_nodes_for_replay = false;
+
+                bool all_push_ok = true;
+                auto now = std::chrono::steady_clock::now();
                 for (const auto& node_id : connected_nodes) {
-                    TLOG_INFO("SchedInfo changed — building schedule table for node '",
-                              node_id, "'");
+                    if (synced_nodes.find(node_id) != synced_nodes.end()) {
+                        continue;
+                    }
+
+                    auto retry_it = next_retry_time.find(node_id);
+                    if (retry_it != next_retry_time.end() && now < retry_it->second) {
+                        continue;
+                    }
+
+                    TLOG_INFO("Replaying schedule table for node '", node_id, "'");
                     auto table =
                         timpani::orchestrator::BuildScheduleTable(node_id, sched_map);
                     bool ok = g_orchestrator_service->push_full_table(node_id, table);
                     TLOG_INFO("push_full_table(\"", node_id, "\") => ",
                               ok ? "OK" : "FAILED");
+
+                    if (ok) {
+                        synced_nodes.insert(node_id);
+                        replay_failures.erase(node_id);
+                        next_retry_time.erase(node_id);
+                    } else {
+                        all_push_ok = false;
+                        synced_nodes.erase(node_id);
+
+                        int fail_count = ++replay_failures[node_id];
+                        int backoff_shift =
+                            std::min(fail_count - 1, kRetryBackoffMaxShift);
+                        auto retry_delay =
+                            kRetryBaseDelay * (1 << backoff_shift);
+                        if (retry_delay > kRetryMaxDelay) {
+                            retry_delay = kRetryMaxDelay;
+                        }
+
+                        next_retry_time[node_id] = now + retry_delay;
+                        TLOG_WARN("push_full_table(\"", node_id,
+                                  "\") retry scheduled in ",
+                                  retry_delay.count(), " ms (attempt ",
+                                  fail_count, ")");
+                    }
+                }
+
+                if (all_push_ok) {
+                    bool all_synced = true;
+                    for (const auto& node_id : connected_nodes) {
+                        if (synced_nodes.find(node_id) == synced_nodes.end()) {
+                            all_synced = false;
+                            break;
+                        }
+                    }
+
+                    if (all_synced) {
+                        replay_pending = false;
+                        TLOG_INFO(
+                            "Schedule replay completed for all connected nodes");
+                    }
                 }
             }
         }
