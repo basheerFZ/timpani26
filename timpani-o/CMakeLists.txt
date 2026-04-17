@@ -3,8 +3,8 @@
 
 cmake_minimum_required(VERSION 3.5)
 
-# Read version from VERSION file
-file(READ "${CMAKE_SOURCE_DIR}/VERSION" VERSION_CONTENT)
+# Read version from project root VERSION file
+file(READ "${CMAKE_SOURCE_DIR}/../VERSION" VERSION_CONTENT)
 string(STRIP "${VERSION_CONTENT}" PROJECT_VERSION_STRING)
 
 # Project name and version

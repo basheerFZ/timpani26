@@ -5,7 +5,13 @@
 
 # TIMPANI
 
-Distributed real-time scheduling system with time-triggered execution capabilities. TIMPANI provides both C and Rust implementations of node executors and schedulers for deterministic real-time applications.
+**TIMPANI** is a distributed real-time scheduling system with time-triggered execution capabilities for Software Defined Vehicles (SDV).
+
+| | |
+|---|---|
+| **Version** | 2026.04.0 ([CalVer](https://calver.org/)) |
+| **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+| **License** | MIT |
 
 This repository contains both original C implementations and modern Rust ports with enhanced type safety and memory safety.
 

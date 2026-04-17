@@ -4,8 +4,12 @@
 
 cmake_minimum_required(VERSION 3.5)
 
+# Read version from project root VERSION file
+file(READ "${CMAKE_SOURCE_DIR}/../VERSION" VERSION_CONTENT)
+string(STRIP "${VERSION_CONTENT}" PROJECT_VERSION_STRING)
+
 # project name and version
-project(timpani-n VERSION 2.0.0 DESCRIPTION "Timpani-n RT Execution Engine")
+project(timpani-n VERSION ${PROJECT_VERSION_STRING} DESCRIPTION "Timpani-n RT Execution Engine")
 
 # Set cmake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}")

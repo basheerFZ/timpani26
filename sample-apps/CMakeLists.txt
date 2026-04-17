@@ -5,8 +5,12 @@ cmake_minimum_required(VERSION 3.6)
 
 cmake_minimum_required(VERSION 3.6)
 
+# Read version from project root VERSION file
+file(READ "${CMAKE_SOURCE_DIR}/../VERSION" VERSION_CONTENT)
+string(STRIP "${VERSION_CONTENT}" PROJECT_VERSION_STRING)
+
 # project name and version
-project(sample_apps VERSION 0.1.0 DESCRIPTION "Timpani Sample Apps")
+project(sample_apps VERSION ${PROJECT_VERSION_STRING} DESCRIPTION "Timpani Sample Apps")
 
 # library install config
 install(TARGETS
