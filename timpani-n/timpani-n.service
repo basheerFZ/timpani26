@@ -21,7 +21,7 @@ Type=simple
 EnvironmentFile=-/etc/timpani/timpani-n.conf
 
 # Command line: timpani-n [options] [orchestrator_host]
-ExecStart=/usr/local/bin/timpani-n \
+ExecStart=/usr/bin/timpani-n \
     -n ${NODE_ID} \
     -p ${ORCHESTRATOR_PORT} \
     ${ORCHESTRATOR_HOST}

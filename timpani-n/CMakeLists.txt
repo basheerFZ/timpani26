@@ -127,6 +127,66 @@ target_include_directories(timpani-n
     PUBLIC ${CMAKE_BINARY_DIR}
 )
 
-install(TARGETS timpani-n DESTINATION bin)
+    # ============================================================================
+    # Installation
+    # ============================================================================
+
+    # Binary
+    install(TARGETS timpani-n DESTINATION bin)
+
+    # Systemd service file
+    install(FILES ${CMAKE_SOURCE_DIR}/timpani-n.service
+        DESTINATION lib/systemd/system)
+
+    # Configuration file
+    install(FILES ${CMAKE_SOURCE_DIR}/timpani-n.conf
+        DESTINATION /etc/timpani)
+
+    # ============================================================================
+    # CPack Configuration
+    # ============================================================================
+
+    set(CPACK_PACKAGE_NAME "timpani-n")
+    set(CPACK_PACKAGE_VENDOR "LG Electronics")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "TIMPANI Node Executor - Real-time Scheduler with BPF/sched_ext")
+    set(CPACK_PACKAGE_DESCRIPTION "TIMPANI-N is a real-time task executor that uses eBPF and sched_ext for deterministic scheduling. It connects to TIMPANI-O orchestrator via gRPC to receive schedule tables and executes time-triggered tasks with microsecond precision.")
+    set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/mco-piccolo/timpani")
+    set(CPACK_PACKAGE_CONTACT "seokhee.han@lge.com")
+    set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/../LICENSE")
+
+    # Package file name format
+    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}_${PROJECT_VERSION}_${CMAKE_SYSTEM_PROCESSOR}")
+
+    # ============================================================================
+    # DEB Package Configuration
+    # ============================================================================
+
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Seokhee Han <seokhee.han@lge.com>")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "admin")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+
+    # Dependencies (Ubuntu 22.04+)
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libelf1, zlib1g, libprotobuf23 | libprotobuf32, libgrpc++1 | libgrpc++1.51")
+
+    # Post-install/remove scripts
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+        "${CMAKE_SOURCE_DIR}/packaging/postinst;${CMAKE_SOURCE_DIR}/packaging/prerm;${CMAKE_SOURCE_DIR}/packaging/postrm")
+
+    # ============================================================================
+    # RPM Package Configuration
+    # ============================================================================
+
+    set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+    set(CPACK_RPM_PACKAGE_GROUP "System Environment/Daemons")
+    set(CPACK_RPM_PACKAGE_DESCRIPTION "${CPACK_PACKAGE_DESCRIPTION}")
+
+    # Dependencies (CentOS Stream 10)
+    set(CPACK_RPM_PACKAGE_REQUIRES "elfutils-libelf, zlib, protobuf, grpc")
+
+    # Post-install/remove scripts
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_SOURCE_DIR}/packaging/postinst")
+    set(CPACK_RPM_PRE_UNINSTALL_SCRIPT_FILE "${CMAKE_SOURCE_DIR}/packaging/prerm")
+    set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE "${CMAKE_SOURCE_DIR}/packaging/postrm")
 
 include(CPack)
