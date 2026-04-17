@@ -19,6 +19,7 @@
 #include "grpc/node_client.h"
 #include "task_registry.h"
 #include "timer_master.h"
+#include "version.h"
 
 volatile sig_atomic_t g_shutdown = 0;
 
@@ -30,6 +31,7 @@ struct RuntimeOptions {
     int orchestrator_port = 50060;
     std::string node_id_override;
     bool show_help = false;
+    bool show_version = false;
 };
 
 void print_usage(const char* prog)
@@ -43,6 +45,7 @@ void print_usage(const char* prog)
         << "  -P <prio>   (compat) RT priority flag accepted but handled elsewhere\n"
         << "  -g          (compat) accepted\n"
         << "  -s          (compat) accepted\n"
+        << "  -V          Show version information\n"
         << "  -h          Show this help\n";
 }
 
@@ -63,10 +66,13 @@ bool parse_runtime_options(int argc, char** argv, RuntimeOptions& options)
 {
     opterr = 0;
     int opt;
-    while ((opt = getopt(argc, argv, "hn:p:l:P:gs")) != -1) {
+    while ((opt = getopt(argc, argv, "hVn:p:l:P:gs")) != -1) {
         switch (opt) {
             case 'h':
                 options.show_help = true;
+                return true;
+            case 'V':
+                options.show_version = true;
                 return true;
             case 'n':
                 options.node_id_override = optarg ? std::string(optarg) : "";
@@ -155,6 +161,12 @@ int main(int argc, char** argv)
     }
     if (runtime_options.show_help) {
         print_usage(argv[0]);
+        return 0;
+    }
+    if (runtime_options.show_version) {
+        std::cout << "timpani-n version " << PROJECT_VERSION << std::endl;
+        std::cout << "  Git commit: " << GIT_COMMIT_HASH << std::endl;
+        std::cout << "  Build time: " << BUILD_TIMESTAMP << std::endl;
         return 0;
     }
 

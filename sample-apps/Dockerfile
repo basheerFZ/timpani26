@@ -21,9 +21,18 @@ RUN apt-get update && apt-get install -y \
 # Copy source code
 COPY . .
 
-# Build sample_apps
+# Version info
+ARG VERSION=2026.04.1
+ARG GIT_COMMIT_HASH=unknown
+LABEL version="${VERSION}" \
+      git.commit="${GIT_COMMIT_HASH}" \
+      project="timpani" \
+      component="sample-apps"
+RUN echo "${VERSION}" > VERSION
+
+# Build sample_apps with version info
 RUN mkdir -p build && cd build && \
-    cmake .. && \
+    cmake -DGIT_COMMIT_HASH=${GIT_COMMIT_HASH} .. && \
     make -j$(nproc)
 
 # Prepare glibc shared libraries for Alpine runtime

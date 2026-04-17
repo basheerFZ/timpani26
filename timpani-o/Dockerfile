@@ -26,6 +26,13 @@ RUN apt-get update && apt-get install -y \
 # Copy source code
 COPY . .
 
+# Version info
+ARG VERSION=2026.04.1
+LABEL version="${VERSION}" \
+      project="timpani" \
+      component="timpani-o"
+RUN echo "${VERSION}" > VERSION
+
 # Build timpani-o
 RUN mkdir -p build && cd build && \
     cmake .. && \

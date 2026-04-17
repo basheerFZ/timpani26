@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| **Version** | 2026.04.0 ([CalVer](https://calver.org/)) |
+| **Version** | 2026.04.1 ([CalVer](https://calver.org/)) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 | **License** | MIT |
 
@@ -33,6 +33,41 @@ cd TIMPANI
 > **Note:** Use `--recurse-submodules` to automatically clone the required submodules (libbpf, etc.).
 
 Refer to the individual component READMEs below for specific build and setup instructions.
+
+### Versioned Build
+
+All binaries embed version, Git commit hash, and build timestamp for traceability:
+
+```bash
+# timpani-n
+cd timpani-n && mkdir build && cd build
+cmake .. && make
+./timpani-n -V
+# timpani-n version 2026.4.1
+#   Git commit: abc1234
+#   Build time: 2026-04-17 06:00:00 UTC
+
+# sample-apps
+cd sample-apps && mkdir build && cd build
+cmake .. && make
+./sample_apps --version
+# sample_apps version 2026.4.1
+#   Git commit: abc1234
+#   Build time: 2026-04-17 06:00:00 UTC
+```
+
+### Container Build with Version
+
+```bash
+cd sample-apps
+VERSION=$(cat ../VERSION)
+GIT_HASH=$(git rev-parse --short HEAD)
+podman build --build-arg VERSION=$VERSION --build-arg GIT_COMMIT_HASH=$GIT_HASH \
+  -t sample-apps:$VERSION .
+
+# Verify version inside container
+podman run --rm sample-apps:$VERSION --version
+```
 
 ## Components
 

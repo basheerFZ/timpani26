@@ -3,8 +3,16 @@
 
 cmake_minimum_required(VERSION 3.5)
 
-# Read version from project root VERSION file
-file(READ "${CMAKE_SOURCE_DIR}/../VERSION" VERSION_CONTENT)
+# Read version from VERSION file
+# Try local VERSION first (for container builds), then parent directory
+if(EXISTS "${CMAKE_SOURCE_DIR}/VERSION")
+    file(READ "${CMAKE_SOURCE_DIR}/VERSION" VERSION_CONTENT)
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/../VERSION")
+    file(READ "${CMAKE_SOURCE_DIR}/../VERSION" VERSION_CONTENT)
+else()
+    set(VERSION_CONTENT "0.0.0-dev")
+    message(WARNING "VERSION file not found, using default: ${VERSION_CONTENT}")
+endif()
 string(STRIP "${VERSION_CONTENT}" PROJECT_VERSION_STRING)
 
 # Project name and version

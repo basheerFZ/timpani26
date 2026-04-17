@@ -22,6 +22,7 @@
 
 #include "sample_apps.h"
 #include "libttsched.h"
+#include "version.h"
 
 #define ALGO_NSQRT	1
 #define ALGO_FIBO	2
@@ -587,11 +588,12 @@ int main(int argc, char *argv[]) {
 		{"timer",     no_argument,       0, 't'},
 		{"bpf",       no_argument,       0, 'b'},
 		{"help",      no_argument,       0, 'h'},
+		{"version",   no_argument,       0, 'V'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "p:d:r:P:a:l:stbh", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "p:d:r:P:a:l:stbhV", long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'p':
 			task_config.period_ms = strtoul(optarg, NULL, 10);
@@ -630,6 +632,11 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'h':
 			print_usage(argv[0]);
+			return EXIT_SUCCESS;
+		case 'V':
+			printf("sample_apps version %s\n", PROJECT_VERSION);
+			printf("  Git commit: %s\n", GIT_COMMIT_HASH);
+			printf("  Build time: %s\n", BUILD_TIMESTAMP);
 			return EXIT_SUCCESS;
 		default:
 			print_usage(argv[0]);

@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| **Version** | 0.1.0 |
+| **Version** | See `./sample_apps --version` |
 | **License** | MIT |
 
 ---
@@ -38,6 +38,12 @@ cd sample-apps
 # Build
 mkdir build && cd build
 cmake .. && make
+
+# Verify version (includes Git commit and build time)
+./sample_apps --version
+# sample_apps version 2026.4.1
+#   Git commit: abc1234
+#   Build time: 2026-04-17 06:00:00 UTC
 
 # Run (from build directory)
 sudo ./sample_apps -p 10 -d 9 -a 3 -l 2000 -P 20 --bpf -s task_A
@@ -73,7 +79,15 @@ make
 
 ```bash
 cd sample-apps
-podman build -t sample-apps:latest .
+
+# Build with version info
+VERSION=$(cat ../VERSION)
+GIT_HASH=$(git rev-parse --short HEAD)
+podman build --build-arg VERSION=$VERSION --build-arg GIT_COMMIT_HASH=$GIT_HASH \
+  -t sample-apps:$VERSION .
+
+# Verify version inside container
+podman run --rm sample-apps:$VERSION --version
 ```
 
 ---

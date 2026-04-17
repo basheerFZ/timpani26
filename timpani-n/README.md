@@ -75,6 +75,12 @@ sudo apt install -y libelf-dev zlib1g-dev clang linux-tools-$(uname -r) \
 mkdir build && cd build
 cmake .. && make
 
+# Verify version (includes Git commit and build time)
+./timpani-n -V
+# timpani-n version 2026.4.1
+#   Git commit: abc1234
+#   Build time: 2026-04-17 06:00:00 UTC
+
 # Run (requires root for BPF)
 sudo ./timpani-n 192.168.1.100  # timpani-o host
 ```
