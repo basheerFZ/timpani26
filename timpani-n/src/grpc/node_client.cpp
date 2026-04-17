@@ -13,12 +13,23 @@ namespace node {
 
 using namespace timpani::node::v1;
 
-NodeClient::NodeClient(const std::string& server_address)
+NodeClient::NodeClient(const std::string& server_address,
+                       const std::string& node_id_override)
     : server_address_(server_address), running_(false), connected_(false)
 {
-    char hostname_buf[256] = {};
-    gethostname(hostname_buf, sizeof(hostname_buf) - 1);
-    node_id_ = std::string(hostname_buf);
+    if (!node_id_override.empty()) {
+        node_id_ = node_id_override;
+    } else {
+        char hostname_buf[256] = {};
+        if (gethostname(hostname_buf, sizeof(hostname_buf) - 1) == 0 &&
+            hostname_buf[0] != '\0') {
+            node_id_ = std::string(hostname_buf);
+        } else {
+            node_id_ = "unknown-node";
+        }
+    }
+
+    std::cout << "[NodeClient] server: " << server_address_ << std::endl;
     std::cout << "[NodeClient] node_id: " << node_id_ << std::endl;
 }
 
