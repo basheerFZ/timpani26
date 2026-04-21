@@ -230,17 +230,9 @@ int main(int argc, char** argv)
                             continue;
                         }
 
-                        // Apply SCHED_FIFO (priority 20 fixed for Phase 1)
-                        struct sched_param param;
-                        param.sched_priority = 20;
-                        if (sched_setscheduler(pid, SCHED_FIFO, &param) == 0) {
-                            std::cout << "[main] Applied SCHED_FIFO to "
-                                      << task_id << " pid=" << pid << std::endl;
-                        } else {
-                            std::cerr << "[main] sched_setscheduler failed for "
-                                      << task_id << " pid=" << pid
-                                      << " errno=" << errno << std::endl;
-                        }
+                        // We do NOT apply SCHED_FIFO here. Tasks must remain as SCHED_NORMAL/SCHED_EXT
+                        // so that the BPF sched_ext scheduler can manage them.
+                        // (Phase 1 V1 wiring used to set SCHED_FIFO, which bypassed BPF).
 
                         // Apply CPU affinity
                         if (sched_setaffinity(pid, sizeof(cpuset), &cpuset) ==
@@ -305,18 +297,7 @@ int main(int argc, char** argv)
                                 << "[main] Task not found in /proc: " << task_id
                                 << std::endl;
                         } else {
-                            struct sched_param param;
-                            param.sched_priority = 20;
-                            if (sched_setscheduler(pid, SCHED_FIFO, &param) ==
-                                0)
-                                std::cout << "[main] Applied SCHED_FIFO to "
-                                          << task_id << " pid=" << pid
-                                          << std::endl;
-                            else
-                                std::cerr
-                                    << "[main] sched_setscheduler failed for "
-                                    << task_id << " pid=" << pid
-                                    << " errno=" << errno << std::endl;
+                            // We do NOT apply SCHED_FIFO here. BPF scheduler will handle it.
 
                             if (sched_setaffinity(pid, sizeof(cpuset),
                                                   &cpuset) == 0)
