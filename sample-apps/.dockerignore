@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation (not needed in image)
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Editor config
+.editorconfig
+
+# Old Dockerfiles (will be deleted)
+Dockerfile.ubuntu
+Dockerfile.centos

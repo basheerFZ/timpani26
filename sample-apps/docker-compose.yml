@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+
+version: '3.8'
+
+services:
+  task_A:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sample-apps:latest
+    container_name: task_A
+    privileged: true
+    command: ["-p", "10", "-d", "9", "-a", "3", "-l", "2000", "-P", "20", "--bpf", "-s", "task_A"]
+    restart: "no"
+
+  task_B:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sample-apps:latest
+    container_name: task_B
+    privileged: true
+    command: ["-p", "20", "-d", "18", "-a", "3", "-l", "3000", "-P", "19", "--bpf", "-s", "task_B"]
+    restart: "no"

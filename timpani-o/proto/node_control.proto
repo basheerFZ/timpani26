@@ -1,0 +1,154 @@
+// SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+
+package timpani.node.v1;
+
+service OrchestratorService {
+  rpc NodeStream (stream NodeEvent) returns (stream ControlCommand) {}
+}
+
+// --- N→O messages ---
+message NodeEvent {
+  string node_id = 1;
+  oneof event {
+    NodeReady    ready   = 2;
+    NodeStatus   status  = 3;
+    FaultInfo    fault   = 4;
+    TableApplied applied = 5;
+  }
+}
+
+message CpuInfo {
+  uint32 cpu_id = 1;
+  uint32 frequency_mhz = 2;
+}
+
+message NodeReady {
+  uint32   cpu_count      = 1;
+  uint32   memory_mb      = 2;
+  repeated CpuInfo cpus   = 3;
+  string   kernel_version = 4;
+  bool     preempt_rt     = 5;
+  bool     sched_ext      = 6;
+}
+
+message NodeStatus {
+  uint32 active_workloads   = 1;
+  uint32 isolated_cpus_used = 2;
+  float  avg_utilization    = 3;
+  uint64 uptime_ns          = 4;
+}
+
+enum FaultType {
+  UNKNOWN = 0;
+  DMISS = 1;
+  BUDGET_EXCEED = 2;
+  WATCHDOG = 3;
+}
+
+message FaultInfo {
+  string    workload_id  = 1;
+  string    task_id      = 2;
+  string    node_id      = 3;
+  FaultType fault_type   = 4;
+  uint64    timestamp_ns = 5;
+  uint32    dmiss_count  = 6;
+  uint64    workload_id_hash = 7;
+  uint64    task_id_hash = 8;
+}
+
+message TableApplied {
+  string table_id = 1;
+  bool   success  = 2;
+  string error    = 3;
+}
+
+// --- O→N messages ---
+message ControlCommand {
+  oneof command {
+    HierarchicalScheduleTable full_table   = 1;
+    ScheduleTableUpdate       update       = 2;
+    ShutdownCommand           shutdown     = 3;
+  }
+}
+
+message ScheduleTableUpdate {
+  string table_id = 1;
+  oneof update {
+    AddWorkloadUpdate    add    = 2;
+    RemoveWorkloadUpdate remove = 3;
+    ModifyWorkloadUpdate modify = 4;
+  }
+}
+
+message AddWorkloadUpdate {
+  repeated PartitionConfig new_partitions = 1;
+}
+
+message RemoveWorkloadUpdate {
+  repeated string workload_ids = 1;
+}
+
+message ModifyWorkloadUpdate {
+  repeated PartitionConfig modified_partitions = 1;
+}
+
+message ShutdownCommand {
+  uint32 grace_period_ms = 1;
+}
+
+// --- Shared messages (from DDR-003) ---
+message HierarchicalScheduleTable {
+  string table_id = 1;
+  string node_id = 2;
+  uint32 hyperperiod_us = 3;
+  uint64 epoch_ns = 4;
+  repeated PartitionConfig partitions = 5;
+}
+
+message PartitionConfig {
+  string partition_id = 1;
+  CpuSetSpec cpuset = 2;
+  repeated LayerConfig layers = 3;
+}
+
+message CpuSetSpec {
+  repeated uint32 cpus = 1;
+  bool isolated = 2;
+}
+
+enum ExecutionModel {
+  TIME_TRIGGERED = 0;
+  EVENT_DRIVEN = 1;
+  DATA_FLOW = 2;
+}
+
+message LayerConfig {
+  int32 layer_index = 4;
+  ExecutionModel model = 1;
+  repeated TtSlot tt_slots = 2;
+  repeated CbsConfig cbs_entries = 3;
+}
+
+message TtSlot {
+  string workload_id = 1;
+  string task_id = 2;
+  uint32 offset_us = 3;
+  uint32 duration_us = 4;
+  uint32 deadline_us = 5;
+  uint32 cpu = 6;
+  uint64 workload_id_hash = 7;
+  uint64 task_id_hash = 8;
+}
+
+message CbsConfig {
+  string workload_id = 1;
+  string task_id = 2;
+  uint32 budget_us = 3;
+  uint32 period_us = 4;
+  uint32 deadline_us = 5;
+  uint64 workload_id_hash = 6;
+  uint64 task_id_hash = 7;
+}

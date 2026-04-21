@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+#
+# TIMPANI-N systemd service unit
+#
+# Installation:
+#   sudo cp timpani-n.service /etc/systemd/system/
+#   sudo cp timpani-n.conf /etc/timpani/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable timpani-n
+#   sudo systemctl start timpani-n
+
+[Unit]
+Description=TIMPANI Node Executor (Real-time Scheduler)
+Documentation=https://github.com/mco-piccolo/timpani
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/timpani/timpani-n.conf
+
+# Command line: timpani-n [options] [orchestrator_host]
+ExecStart=/usr/bin/timpani-n \
+    -n ${NODE_ID} \
+    -p ${ORCHESTRATOR_PORT} \
+    ${ORCHESTRATOR_HOST}
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Required capabilities for BPF and real-time scheduling
+# CAP_BPF: Load BPF programs
+# CAP_SYS_ADMIN: sched_ext, BPF map operations
+# CAP_SYS_NICE: Real-time priority (SCHED_FIFO), nice values
+# CAP_SYS_RESOURCE: setrlimit for memlock (BPF maps)
+CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN CAP_SYS_NICE CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_BPF CAP_SYS_ADMIN CAP_SYS_NICE CAP_SYS_RESOURCE
+
+# Security hardening (allow necessary access)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# Required for BPF and sched_ext
+ReadWritePaths=/sys/kernel/sched_ext
+ReadWritePaths=/sys/fs/bpf
+ReadWritePaths=/dev/shm
+
+# Process and memory access
+ProtectKernelModules=no
+ProtectKernelTunables=no
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=timpani-n
+
+# Resource limits
+MemoryMax=512M
+TasksMax=64
+
+# Real-time scheduling
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+
+[Install]
+WantedBy=multi-user.target

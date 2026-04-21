@@ -11,18 +11,12 @@ services:
     image: sdv.lge.com/timpani/timpani-o:latest
     container_name: timpani-o
     ports:
-      - "50052:50052"  # gRPC SchedInfoServer
-      - "7777:7777"    # D-Bus Server (libtrpc)
+      - "50052:50052"  # gRPC SchedInfoServer (Pullpiri -> timpani-o)
+      - "50060:50060"  # gRPC OrchestratorServer (timpani-n <-> timpani-o)
     environment:
-      - SINFO_PORT=50052
-      - DBUS_PORT=7777
       - FAULT_HOST=${FAULT_HOST:-localhost}
       - FAULT_PORT=${FAULT_PORT:-50053}
     volumes:
-      # Mount custom node configuration (optional)
-      - ./examples/node_configurations.yaml:/timpani-o/config/node_configurations.yaml:ro
-    command: ["-s", "50052", "-d", "7777", "-c", "/timpani-o/config/node_configurations.yaml"]
+      - ./examples/node_configurations.yaml:/config/node_configurations.yaml:ro
+    command: ["-c", "/config/node_configurations.yaml"]
     restart: unless-stopped
-    # For connecting to Piccolo FaultService on host
-    # extra_hosts:
-    #   - "piccolo-server:host-gateway"

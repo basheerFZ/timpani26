@@ -1,7 +1,15 @@
 # TTRT Global Scheduler - Node Configuration File
-# 각 노드의 하드웨어 사양 및 가용 리소스 정의
+# 각 노드의 하드웨어 사양 정의
 
 nodes:
+  mosqhan-Z790-AORUS-ELITE:
+    # Single-machine verification node (1차 검증용 — hostname as node_id)
+    available_cpus: [28, 29, 30, 31]
+    max_memory_mb: 16384
+    architecture: "x86_64"
+    location: "local"
+    description: "Local single-machine verification node (no-Pullpiri, no-BPF)"
+
   node01:
     # 인지 및 센서 융합 노드 (4코어 시스템, CPU0 제외하고 끝쪽 3개 사용)
     available_cpus: [2, 3]
