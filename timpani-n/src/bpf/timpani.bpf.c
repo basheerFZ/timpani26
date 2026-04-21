@@ -15,13 +15,8 @@
 #define DSQ_THROTTLED ((1ULL << 61) | 1)
 #define DSQ_BE        ((1ULL << 61) | 2)
 
-// Missing SCX flags if omitted
-#ifndef SCX_DSQ_LOCAL
-#define SCX_DSQ_LOCAL 0
-#endif
-#ifndef SCX_SLICE_DFL
-#define SCX_SLICE_DFL 0
-#endif
+// SCX_DSQ_LOCAL and SCX_SLICE_DFL are enums in vmlinux.h
+// Removing incorrect macro fallbacks that redefine them to 0
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
