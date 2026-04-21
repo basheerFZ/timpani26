@@ -36,7 +36,7 @@ podman run --rm sample-apps:$VERSION --version
 # Run (requires timpani-n running with /dev/shm/timpani_ttsched)
 podman run -d --privileged --pid=host --ipc=host --name task_A \
   sample-apps:$VERSION \
-  -p 10 -d 9 -a 3 -l 2000 -P 20 --bpf -s task_A
+  -p 10 -d 9 -a 3 -l 2000 --bpf -s task_A
 ```
 
 ### Native Build
@@ -55,7 +55,7 @@ cmake .. && make
 #   Build time: 2026-04-17 06:00:00 UTC
 
 # Run (from build directory)
-sudo ./sample_apps -p 10 -d 9 -a 3 -l 2000 -P 20 --bpf -s task_A
+sudo ./sample_apps -p 10 -d 9 -a 3 -l 2000 --bpf -s task_A
 ```
 
 ---
@@ -109,7 +109,7 @@ podman run --rm sample-apps:$VERSION --version
 # From build directory (requires sudo for SCHED_FIFO)
 
 # BPF mode (with timpani-n)
-sudo ./sample_apps -p 10 -d 9 -a 3 -l 2000 -P 20 --bpf -s task_A
+sudo ./sample_apps -p 10 -d 9 -a 3 -l 2000 --bpf -s task_A
 
 # Timer mode (standalone)
 sudo ./sample_apps -p 100 -d 90 -a 1 -l 5 -t mytask
@@ -126,11 +126,11 @@ Container execution requires special permissions for real-time scheduling and IP
 # BPF mode (with timpani-n)
 podman run -d --privileged --pid=host --ipc=host --name task_A \
   sample-apps:latest \
-  -p 10 -d 9 -a 3 -l 2000 -P 20 --bpf -s task_A
+  -p 10 -d 9 -a 3 -l 2000 --bpf -s task_A
 
 podman run -d --privileged --pid=host --ipc=host --name task_B \
   sample-apps:latest \
-  -p 20 -d 18 -a 3 -l 3000 -P 19 --bpf -s task_B
+  -p 20 -d 18 -a 3 -l 3000 --bpf -s task_B
 
 # Timer mode (standalone)
 podman run -d --privileged --name mytask \
