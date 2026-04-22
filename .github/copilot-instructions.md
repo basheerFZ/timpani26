@@ -1,8 +1,7 @@
-```instructions
-#<!--
-#* SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
-#* SPDX-License-Identifier: MIT
-#-->
+<!--
+* SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+* SPDX-License-Identifier: MIT
+-->
 
 # GitHub Copilot Instructions — TIMPANI Project
 
@@ -392,4 +391,3 @@ Design decisions for Timpani 26 are tracked in `doc/design/`:
 | gRPC NodeStream server (→ Timpani-N) | `timpani-o/src/orchestrator_service.cpp` |
 | gRPC handler (Pullpiri input) | `timpani-o/src/schedinfo_service.cpp` |
 | Sample workloads | `sample-apps/src/sample_apps.c` |
-```
