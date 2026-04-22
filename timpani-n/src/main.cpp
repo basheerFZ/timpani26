@@ -12,11 +12,20 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <vector>
 
 #include "bpf_loader.h"
 #include "fault_monitor.h"
+#ifdef CONFIG_TRACE_BPF_EVENT
+#include "gpdata_writer.h"
+#endif
 #include "grpc/node_client.h"
+#ifdef CONFIG_TRACE_BPF_EVENT
+#include "schedstat_monitor.h"
+#endif
 #include "task_registry.h"
 #include "timer_master.h"
 #include "version.h"
@@ -30,6 +39,7 @@ struct RuntimeOptions {
     std::string orchestrator_host = "127.0.0.1";
     int orchestrator_port = 50060;
     std::string node_id_override;
+    bool enable_plot = false;
     bool show_help = false;
     bool show_version = false;
 };
@@ -43,7 +53,7 @@ void print_usage(const char* prog)
         << "  -n <name>   Node ID override (default: hostname)\n"
         << "  -l <level>  (compat) log level flag accepted but handled elsewhere\n"
         << "  -P <prio>   (compat) RT priority flag accepted but handled elsewhere\n"
-        << "  -g          (compat) accepted\n"
+        << "  -g          Enable gpdata output (<node>.gpdata)\n"
         << "  -s          (compat) accepted\n"
         << "  -V          Show version information\n"
         << "  -h          Show this help\n";
@@ -89,8 +99,10 @@ bool parse_runtime_options(int argc, char** argv, RuntimeOptions& options)
                 // Compatibility option: accepted for legacy launch scripts.
                 break;
             case 'g':
+                options.enable_plot = true;
+                break;
             case 's':
-                // Compatibility flags: accepted for legacy launch scripts.
+                // Compatibility flag: accepted for legacy launch scripts.
                 break;
             case '?':
             default:
@@ -110,6 +122,21 @@ bool parse_runtime_options(int argc, char** argv, RuntimeOptions& options)
     }
 
     return true;
+}
+
+std::string resolve_node_id(const RuntimeOptions& options)
+{
+    if (!options.node_id_override.empty()) {
+        return options.node_id_override;
+    }
+
+    char hostname[256] = {};
+    if (gethostname(hostname, sizeof(hostname) - 1) == 0 &&
+        hostname[0] != '\0') {
+        return std::string(hostname);
+    }
+
+    return "node";
 }
 }  // namespace
 
@@ -185,6 +212,15 @@ int main(int argc, char** argv)
         std::cout << "[main] Node ID override: "
                   << runtime_options.node_id_override << std::endl;
     }
+    if (runtime_options.enable_plot) {
+#ifdef CONFIG_TRACE_BPF_EVENT
+        std::cout << "[main] gpdata output enabled (-g)" << std::endl;
+#else
+        std::cerr << "[main] -g was requested but this binary was built "
+                     "without CONFIG_TRACE_BPF_EVENT=ON."
+                  << std::endl;
+#endif
+    }
 
     try {
         // 1. Initialize BPF Loader and ensure safe termination
@@ -202,53 +238,64 @@ int main(int argc, char** argv)
         timpani::node::FaultMonitor fault_monitor;
         fault_monitor.set_ringbuf_fd(bpf_loader.get_fault_ringbuf_fd());
 
+    #ifdef CONFIG_TRACE_BPF_EVENT
+        std::unique_ptr<timpani::node::GpdataWriter> gpdata_writer;
+        timpani::node::SchedstatMonitor schedstat_monitor;
+        std::map<pid_t, std::string> gpdata_pid_to_task;
+        std::mutex gpdata_pid_map_mutex;
+
+        if (runtime_options.enable_plot) {
+            const std::string gpdata_node_id = resolve_node_id(runtime_options);
+            gpdata_writer =
+                std::make_unique<timpani::node::GpdataWriter>(gpdata_node_id);
+
+            if (!gpdata_writer->start()) {
+                std::cerr << "[main] Failed to start gpdata writer. "
+                             "Continuing without gpdata output."
+                          << std::endl;
+                gpdata_writer.reset();
+            } else if (!schedstat_monitor.start(
+                           [&gpdata_writer, &gpdata_pid_to_task,
+                            &gpdata_pid_map_mutex](const schedstat_event&
+                                                       event) {
+                               if (!gpdata_writer) {
+                                   return;
+                               }
+
+                               std::string task_name;
+                               {
+                                   std::lock_guard<std::mutex> lock(
+                                       gpdata_pid_map_mutex);
+                                   auto it = gpdata_pid_to_task.find(
+                                       static_cast<pid_t>(event.pid));
+                                   if (it != gpdata_pid_to_task.end()) {
+                                       task_name = it->second;
+                                   }
+                               }
+
+                               if (task_name.empty()) {
+                                   return;
+                               }
+
+                               gpdata_writer->write_event(event, task_name);
+                           })) {
+                std::cerr << "[main] Failed to start schedstat monitor. "
+                             "Continuing without gpdata output."
+                          << std::endl;
+                gpdata_writer->stop();
+                gpdata_writer.reset();
+            } else {
+                std::cout << "[main] gpdata path: " << gpdata_node_id
+                          << ".gpdata" << std::endl;
+            }
+        }
+#endif
+
         // Initialize NodeClient (gRPC)
         timpani::node::NodeClient node_client(
             orchestrator_endpoint, runtime_options.node_id_override);
 
         // Connect callbacks
-        node_client.set_table_callback([&bpf_loader](const auto& table) {
-            std::cout << "[main] Received table: " << table.table_id()
-                      << " hyperperiod=" << table.hyperperiod_us() << "us"
-                      << " partitions=" << table.partitions_size() << std::endl;
-
-            for (const auto& partition : table.partitions()) {
-                // Build CPU affinity mask from partition cpuset
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                for (uint32_t cpu : partition.cpuset().cpus())
-                    CPU_SET(cpu, &cpuset);
-
-                for (const auto& layer : partition.layers()) {
-                    for (const auto& slot : layer.tt_slots()) {
-                        const std::string& task_id = slot.task_id();
-                        pid_t pid = find_pid_by_comm(task_id);
-                        if (pid < 0) {
-                            std::cerr
-                                << "[main] Task not found in /proc: " << task_id
-                                << std::endl;
-                            continue;
-                        }
-
-                        // We do NOT apply SCHED_FIFO here. Tasks must remain as SCHED_NORMAL/SCHED_EXT
-                        // so that the BPF sched_ext scheduler can manage them.
-                        // (Phase 1 V1 wiring used to set SCHED_FIFO, which bypassed BPF).
-
-                        // Apply CPU affinity
-                        if (sched_setaffinity(pid, sizeof(cpuset), &cpuset) ==
-                            0) {
-                            std::cout << "[main] Applied CPU affinity to "
-                                      << task_id << " pid=" << pid << std::endl;
-                        } else {
-                            std::cerr << "[main] sched_setaffinity failed for "
-                                      << task_id << " pid=" << pid
-                                      << " errno=" << errno << std::endl;
-                        }
-                    }
-                }
-            }
-        });
-
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
             std::cout << "[main] Received shutdown command: " << grace_period_ms
                       << " ms" << std::endl;
@@ -271,11 +318,33 @@ int main(int argc, char** argv)
 
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
-        node_client.set_table_callback([&bpf_loader,
-                                        &timer_master](const auto& table) {
+        node_client.set_table_callback([&timer_master, &runtime_options
+    #ifdef CONFIG_TRACE_BPF_EVENT
+                        , &schedstat_monitor,
+                        &gpdata_pid_to_task,
+                        &gpdata_pid_map_mutex
+    #endif
+                        ](const auto& table) {
             std::cout << "[main] Received table: " << table.table_id()
                       << " hyperperiod=" << table.hyperperiod_us() << "us"
                       << " partitions=" << table.partitions_size() << std::endl;
+
+    #ifdef CONFIG_TRACE_BPF_EVENT
+            if (runtime_options.enable_plot && schedstat_monitor.is_active()) {
+                std::vector<pid_t> stale_pids;
+                {
+                    std::lock_guard<std::mutex> lock(gpdata_pid_map_mutex);
+                    for (const auto& entry : gpdata_pid_to_task) {
+                        stale_pids.push_back(entry.first);
+                    }
+                    gpdata_pid_to_task.clear();
+                }
+
+                for (pid_t stale_pid : stale_pids) {
+                    schedstat_monitor.remove_pid(stale_pid);
+                }
+            }
+#endif
 
             // Build SlotEntry list from TtSlots
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
@@ -297,6 +366,21 @@ int main(int argc, char** argv)
                                 << "[main] Task not found in /proc: " << task_id
                                 << std::endl;
                         } else {
+#ifdef CONFIG_TRACE_BPF_EVENT
+                            if (runtime_options.enable_plot &&
+                                schedstat_monitor.is_active()) {
+                                if (schedstat_monitor.add_pid(pid)) {
+                                    std::lock_guard<std::mutex> lock(
+                                        gpdata_pid_map_mutex);
+                                    gpdata_pid_to_task[pid] = task_id;
+                                } else {
+                                    std::cerr
+                                        << "[main] Failed to register PID for gpdata: "
+                                        << pid << std::endl;
+                                }
+                            }
+#endif
+
                             // We do NOT apply SCHED_FIFO here. BPF scheduler will handle it.
 
                             if (sched_setaffinity(pid, sizeof(cpuset),
@@ -344,6 +428,12 @@ int main(int argc, char** argv)
 
         timer_master.stop();
         fault_monitor.stop();
+#ifdef CONFIG_TRACE_BPF_EVENT
+        schedstat_monitor.stop();
+        if (gpdata_writer) {
+            gpdata_writer->stop();
+        }
+#endif
         node_client.disconnect();
 
     } catch (const std::exception& e) {

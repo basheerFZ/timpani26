@@ -125,6 +125,9 @@ void TimerMaster::thread_loop()
             current_hyperperiod_start =
                 (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
         }
+        std::cout << "[TimerMaster] Hyperperiod start time set: "
+                  << (current_hyperperiod_start / 1000ULL) << " us"
+                  << std::endl;
 
         while (running_ && !table_pending_) {
             const auto& slot = slot_table_[next_slot_idx];
