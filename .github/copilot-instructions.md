@@ -31,20 +31,6 @@ the remote branch without switching your local checkout.
 
 ```bash
 git fetch origin dev/design-docs
-git show origin/dev/design-docs --name-only | grep "^doc/design"
-```
-
-Read every DDR in `doc/design/` from that branch:
-
-```bash
-git show origin/dev/design-docs:doc/design/DDR-001-workload-model.md
-git show origin/dev/design-docs:doc/design/DDR-002-scheduling-architecture.md
-git show origin/dev/design-docs:doc/design/DDR-003-interface-protocol.md
-git show origin/dev/design-docs:doc/design/DDR-004-resource-allocation.md
-git show origin/dev/design-docs:doc/design/DDR-005-sched-ext-bpf-scheduler.md
-git show origin/dev/design-docs:doc/design/DDR-006-communication-architecture.md
-git show origin/dev/design-docs:doc/design/DDR-007-tt-cbs-integrated-scheduling.md
-git show origin/dev/design-docs:doc/design/HSF-concept.md
 ```
 
 > **Why**: `dev/design-docs` is maintained by PL separately from the
@@ -52,12 +38,31 @@ git show origin/dev/design-docs:doc/design/HSF-concept.md
 > into `timpani26`. Always treat these documents as the authoritative
 > design specification.
 
+Do **not** read all DDRs upfront. Read only the DDRs relevant to the
+user's request. Use this table to decide which to load:
+
+| User request topic | DDRs to read |
+|:--|:--|
+| Workload model, L1~L4 classification | DDR-001, HSF-concept |
+| Scheduling architecture, HSF tree | DDR-002, HSF-concept |
+| Interface, proto, gRPC API | DDR-003, DDR-006 |
+| Resource allocation, CPU assignment | DDR-004 |
+| BPF scheduler, sched_ext, DSQ | DDR-005 |
+| Communication, NodeStream, runtime update | DDR-006 |
+| TT+CBS integrated scheduling, hyperperiod | DDR-007 |
+| General / unclear | DDR-001, DDR-002, HSF-concept |
+
+Read selected DDRs with:
+```bash
+git show origin/dev/design-docs:doc/design/<filename>
+```
+
 ### Step 3 — Confirm readiness
 
 After completing Steps 1 and 2, briefly state:
 - The HEAD commit hash and message of `origin/timpani26`
 - The HEAD commit hash and message of `origin/dev/design-docs`
-- Any DDRs that are in Draft status (action items for the session)
+- Which DDR(s) were loaded for this session and why
 
 Only then proceed to answer the user's request.
 
