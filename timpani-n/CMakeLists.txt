@@ -53,6 +53,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # BPF build option
 option(CONFIG_TRACE_BPF "Enable eBPF sched_ext scheduler" ON)
+option(CONFIG_TRACE_BPF_EVENT "Enable eBPF schedstat tracing for gpdata output" OFF)
+
+set(TIMPANI_ENABLE_GPDATA OFF)
+if(CONFIG_TRACE_BPF_EVENT AND NOT CONFIG_TRACE_BPF)
+    message(WARNING "CONFIG_TRACE_BPF_EVENT=ON requires CONFIG_TRACE_BPF=ON. gpdata tracing will be disabled.")
+endif()
+if(CONFIG_TRACE_BPF AND CONFIG_TRACE_BPF_EVENT)
+    set(TIMPANI_ENABLE_GPDATA ON)
+endif()
 
 # GRPC / Protobuf definitions for node_control.proto
 set(TIMPANI_O_PROTO_DIR "${CMAKE_SOURCE_DIR}/../timpani-o/proto")
@@ -118,6 +127,12 @@ if(CONFIG_TRACE_BPF)
 
     # Build sched_ext BPF scheduler (timpani.bpf.c)
     ADD_BPF(src/bpf_loader.cpp src/bpf/timpani.bpf.c timpani.bpf.o timpani.skel.h)
+
+    if(TIMPANI_ENABLE_GPDATA)
+        message(STATUS "CONFIG_TRACE_BPF_EVENT is ON - Building schedstat BPF tracer")
+        add_compile_definitions(CONFIG_TRACE_BPF_EVENT=1)
+        ADD_BPF(src/schedstat_monitor.cpp src/bpf/schedstat.bpf.c schedstat.bpf.o schedstat.skel.h)
+    endif()
 endif()
 
 # timpani-n C++ sources (DDR-006 rework)
@@ -131,6 +146,13 @@ set(TIMPANI_N_SOURCES
     ${NODE_CONTROL_PROTO_SRC}
     ${NODE_CONTROL_GRPC_SRC}
 )
+
+if(TIMPANI_ENABLE_GPDATA)
+    list(APPEND TIMPANI_N_SOURCES
+        src/gpdata_writer.cpp
+        src/schedstat_monitor.cpp
+    )
+endif()
 
 add_executable(timpani-n ${TIMPANI_N_SOURCES})
 
