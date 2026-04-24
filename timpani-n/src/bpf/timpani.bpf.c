@@ -242,8 +242,19 @@ void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
     }
 }
 
+SEC("struct_ops.s/init")
+s32 BPF_PROG(init) {
+    /* Initialize global custom DSQs */
+    scx_bpf_create_dsq(DSQ_CBS, -1);
+    scx_bpf_create_dsq(DSQ_THROTTLED, -1);
+    scx_bpf_create_dsq(DSQ_BE, -1);
+
+    return 0;
+}
+
 SEC(".struct_ops.link")
 struct sched_ext_ops timpani_ops = {
+    .init = (void *)init,
     .init_task = (void *)init_task,
     .select_cpu = (void *)select_cpu,
     .enqueue = (void *)enqueue,
