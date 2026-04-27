@@ -10,10 +10,11 @@
 #define _LINUX_TYPES_H // Prevent linux/types.h redefinition clash with vmlinux.h
 #include "maps.h"
 
-// SCX DSQ IDs
-#define DSQ_CBS       (1ULL << 61)
-#define DSQ_THROTTLED ((1ULL << 61) | 1)
-#define DSQ_BE        ((1ULL << 61) | 2)
+// SCX DSQ IDs — simple integers to avoid kernel validation issues
+#define DSQ_TT_WAIT   100
+#define DSQ_CBS       101
+#define DSQ_THROTTLED 102
+#define DSQ_BE        103
 
 // SCX_DSQ_LOCAL and SCX_SLICE_DFL are enums in vmlinux.h
 // Removing incorrect macro fallbacks that redefine them to 0
@@ -76,10 +77,8 @@ int BPF_PROG(init_task, struct task_struct *p, struct scx_init_task_args *args) 
     __u32 pid = p->pid;
     struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
     if (!meta) return 0;
-    
-    if (meta->scheduling_type == SCHED_TYPE_TT) {
-        scx_bpf_create_dsq(meta->task_id_hash, -1);
-    }
+    /* Per-task DSQ creation removed — using global DSQ_TT_WAIT instead.
+     * init_task() runs before task_meta_map is populated, causing a race. */
     return 0;
 }
 
@@ -112,7 +111,7 @@ void BPF_PROG(enqueue, struct task_struct *p, u64 enq_flags) {
     }
 
     if (meta->scheduling_type == SCHED_TYPE_TT) {
-        scx_bpf_dispatch(p, meta->task_id_hash, SCX_SLICE_DFL, enq_flags);
+        scx_bpf_dispatch(p, DSQ_TT_WAIT, SCX_SLICE_DFL, enq_flags);
     } else if (meta->scheduling_type == SCHED_TYPE_CBS) {
         /* N1: CBS budget check — throttle if budget exhausted */
         struct CbsState *cbs = bpf_map_lookup_elem(&cbs_map, &meta->task_id_hash);
@@ -147,12 +146,12 @@ void BPF_PROG(dispatch, s32 cpu, struct task_struct *prev) {
     }
 
     __u32 *slot_idx = bpf_map_lookup_elem(&current_slot_map, &key);
-    if (slot_idx) {
+    if (slot_idx && *slot_idx != SLOT_NONE) {
         struct TtSlotKey tt_key = { .cpu = cpu, .slot_idx = *slot_idx };
         struct TtSlotBpf *slot = bpf_map_lookup_elem(&tt_table_map, &tt_key);
         if (slot) {
-            // Task matching slot is preferred
-            if (scx_bpf_consume(slot->task_id_hash)) {
+            // Consume from global TT wait queue (all TT tasks go here)
+            if (scx_bpf_consume(DSQ_TT_WAIT)) {
                 return;
             }
         }
@@ -245,6 +244,7 @@ void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
 SEC("struct_ops.s/init")
 s32 BPF_PROG(init) {
     /* Initialize global custom DSQs */
+    scx_bpf_create_dsq(DSQ_TT_WAIT, -1);
     scx_bpf_create_dsq(DSQ_CBS, -1);
     scx_bpf_create_dsq(DSQ_THROTTLED, -1);
     scx_bpf_create_dsq(DSQ_BE, -1);

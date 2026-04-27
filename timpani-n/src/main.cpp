@@ -420,12 +420,25 @@ int main(int argc, char** argv)
                         // Add TimerMaster slot entry
                         timpani::node::TimerMaster::SlotEntry entry;
                         entry.cpu = tt_slot.cpu();
-                        entry.slot_idx = slot_idx++;
+                        entry.slot_idx = slot_idx;
                         entry.offset_ns =
                             static_cast<uint64_t>(tt_slot.offset_us()) *
                             1000ULL;
                         entry.task_id_hash = tt_slot.task_id_hash();
                         slots.push_back(entry);
+
+                        // Populate BPF tt_table_map so dispatch() can consume from DSQ_TT_WAIT
+                        TtSlotKey tt_key = { .cpu = tt_slot.cpu(), .slot_idx = slot_idx };
+                        TtSlotBpf slot_bpf = {};
+                        slot_bpf.workload_id_hash = tt_slot.workload_id_hash();
+                        slot_bpf.task_id_hash = tt_slot.task_id_hash();
+                        slot_bpf.offset_us = tt_slot.offset_us();
+                        slot_bpf.duration_us = tt_slot.duration_us();
+                        slot_bpf.deadline_us = tt_slot.deadline_us();
+                        slot_bpf.cpu = tt_slot.cpu();
+                        bpf_loader.update_tt_slot(tt_key, slot_bpf);
+
+                        slot_idx++;
                     }
                 }
             }
