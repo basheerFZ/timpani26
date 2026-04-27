@@ -318,7 +318,7 @@ int main(int argc, char** argv)
 
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
-        node_client.set_table_callback([&timer_master, &runtime_options
+        node_client.set_table_callback([&timer_master, &bpf_loader, &runtime_options
     #ifdef CONFIG_TRACE_BPF_EVENT
                         , &schedstat_monitor,
                         &gpdata_pid_to_task,
@@ -382,6 +382,28 @@ int main(int argc, char** argv)
 #endif
 
                             // We do NOT apply SCHED_FIFO here. BPF scheduler will handle it.
+                            // Register task in BPF task_meta_map so scx_timpani
+                            // can route it to the correct DSQ.
+                            TaskMeta meta = {};
+                            meta.workload_id_hash = tt_slot.workload_id_hash();
+                            meta.task_id_hash = tt_slot.task_id_hash();
+                            meta.scheduling_type = SCHED_TYPE_TT;
+                            meta.layer = layer.layer_index();
+                            meta.activation_ns = 0;
+                            meta.cgroup_id = 0; // TODO: resolve from cgroup path
+                            if (bpf_loader.update_task_meta(
+                                    static_cast<uint32_t>(pid), meta)) {
+                                std::cout << "[main] Registered task in BPF: "
+                                          << task_id << " pid=" << pid
+                                          << " type=TT hash=0x" << std::hex
+                                          << meta.task_id_hash << std::dec
+                                          << std::endl;
+                            } else {
+                                std::cerr << "[main] Failed to register task in "
+                                             "BPF task_meta_map: "
+                                          << task_id << " pid=" << pid
+                                          << std::endl;
+                            }
 
                             if (sched_setaffinity(pid, sizeof(cpuset),
                                                   &cpuset) == 0)
