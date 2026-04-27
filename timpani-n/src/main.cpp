@@ -381,7 +381,7 @@ int main(int argc, char** argv)
                             }
 #endif
 
-                            // We do NOT apply SCHED_FIFO here. BPF scheduler will handle it.
+                            // Apply CPU affinity to matching process (BPF handles scheduling)
                             // Register task in BPF task_meta_map so scx_timpani
                             // can route it to the correct DSQ.
                             TaskMeta meta = {};

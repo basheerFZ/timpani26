@@ -106,7 +106,7 @@ void BPF_PROG(enqueue, struct task_struct *p, u64 enq_flags) {
     __u32 pid = p->pid;
     struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
     if (!meta) {
-        scx_bpf_dispatch(p, SCX_DSQ_LOCAL, SCX_SLICE_DFL, enq_flags);
+        scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
         return;
     }
 
@@ -235,6 +235,7 @@ void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
                 fault->workload_id_hash = meta->workload_id_hash;
                 fault->cpu = cpu_key;
                 fault->expected_deadline_ns = deadline;
+                fault->actual_completion_ns = now;
                 bpf_ringbuf_submit(fault, 0);
             }
         }
@@ -254,6 +255,7 @@ s32 BPF_PROG(init) {
 
 SEC(".struct_ops.link")
 struct sched_ext_ops timpani_ops = {
+    .flags = SCX_OPS_SWITCH_PARTIAL,
     .init = (void *)init,
     .init_task = (void *)init_task,
     .select_cpu = (void *)select_cpu,
