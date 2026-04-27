@@ -562,6 +562,8 @@ static void print_usage(const char *prog_name) {
 }
 
 int main(int argc, char *argv[]) {
+	/* Disable stdout buffering so logs appear immediately even if podman buffers or we hang on futex */
+	setvbuf(stdout, NULL, _IONBF, 0);
 	sigset_t sig_set;
 	struct timespec now, before, deadline_time;
 	clockid_t clockid = CLOCK_MONOTONIC;
