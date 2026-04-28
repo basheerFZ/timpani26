@@ -318,7 +318,7 @@ int main(int argc, char** argv)
 
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
-        node_client.set_table_callback([&timer_master, &runtime_options
+        node_client.set_table_callback([&timer_master, &bpf_loader, &runtime_options
     #ifdef CONFIG_TRACE_BPF_EVENT
                         , &schedstat_monitor,
                         &gpdata_pid_to_task,
@@ -381,7 +381,29 @@ int main(int argc, char** argv)
                             }
 #endif
 
-                            // We do NOT apply SCHED_FIFO here. BPF scheduler will handle it.
+                            // Apply CPU affinity to matching process (BPF handles scheduling)
+                            // Register task in BPF task_meta_map so scx_timpani
+                            // can route it to the correct DSQ.
+                            TaskMeta meta = {};
+                            meta.workload_id_hash = tt_slot.workload_id_hash();
+                            meta.task_id_hash = tt_slot.task_id_hash();
+                            meta.scheduling_type = SCHED_TYPE_TT;
+                            meta.layer = layer.layer_index();
+                            meta.activation_ns = 0;
+                            meta.cgroup_id = 0; // TODO: resolve from cgroup path
+                            if (bpf_loader.update_task_meta(
+                                    static_cast<uint32_t>(pid), meta)) {
+                                std::cout << "[main] Registered task in BPF: "
+                                          << task_id << " pid=" << pid
+                                          << " type=TT hash=0x" << std::hex
+                                          << meta.task_id_hash << std::dec
+                                          << std::endl;
+                            } else {
+                                std::cerr << "[main] Failed to register task in "
+                                             "BPF task_meta_map: "
+                                          << task_id << " pid=" << pid
+                                          << std::endl;
+                            }
 
                             if (sched_setaffinity(pid, sizeof(cpuset),
                                                   &cpuset) == 0)
@@ -398,12 +420,25 @@ int main(int argc, char** argv)
                         // Add TimerMaster slot entry
                         timpani::node::TimerMaster::SlotEntry entry;
                         entry.cpu = tt_slot.cpu();
-                        entry.slot_idx = slot_idx++;
+                        entry.slot_idx = slot_idx;
                         entry.offset_ns =
                             static_cast<uint64_t>(tt_slot.offset_us()) *
                             1000ULL;
                         entry.task_id_hash = tt_slot.task_id_hash();
                         slots.push_back(entry);
+
+                        // Populate BPF tt_table_map so dispatch() can consume from DSQ_TT_WAIT
+                        TtSlotKey tt_key = { .cpu = tt_slot.cpu(), .slot_idx = slot_idx };
+                        TtSlotBpf slot_bpf = {};
+                        slot_bpf.workload_id_hash = tt_slot.workload_id_hash();
+                        slot_bpf.task_id_hash = tt_slot.task_id_hash();
+                        slot_bpf.offset_us = tt_slot.offset_us();
+                        slot_bpf.duration_us = tt_slot.duration_us();
+                        slot_bpf.deadline_us = tt_slot.deadline_us();
+                        slot_bpf.cpu = tt_slot.cpu();
+                        bpf_loader.update_tt_slot(tt_key, slot_bpf);
+
+                        slot_idx++;
                     }
                 }
             }

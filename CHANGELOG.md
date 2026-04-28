@@ -7,6 +7,23 @@ and this project adheres to [Calendar Versioning](https://calver.org/) (YYYY.MM.
 
 ## [Unreleased]
 
+## [2026.04.2] - 2026-04-27
+
+Patch release for sample-apps IPC compatibility and DDR-005 BPF scheduler compliance.
+
+### timpani-n
+
+#### Added
+- BPF scheduler: Apply DDR-005 partial compliance requirements (Gap 3, 4, 7, 8, 9)
+  - Route unregistered tasks to `SCX_DSQ_GLOBAL`
+  - Enforce `SCX_OPS_SWITCH_PARTIAL`
+  - Utilize `BPF_STRUCT_OPS_SLEEPABLE(init)`
+  - Track `actual_completion_ns` for deadline misses
+
+#### Fixed
+- `dispatch()`: Added `SLOT_NONE` handling to prevent invalid slot dispatches
+- `sample_apps`: Disabled stdout buffering for correct logging in container IPC environments
+
 ## [2026.04.1] - 2026-04-17
 
 Patch release with multi-node support enhancements, version traceability, and build improvements.
@@ -141,4 +158,5 @@ YYYY.MM.PATCH
 Examples:
 - `2026.04.0` - First release in April 2026
 - `2026.04.1` - First patch in April 2026
+- `2026.04.2` - Second patch in April 2026
 - `2026.05.0` - First release in May 2026

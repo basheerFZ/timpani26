@@ -562,6 +562,8 @@ static void print_usage(const char *prog_name) {
 }
 
 int main(int argc, char *argv[]) {
+	/* Disable stdout buffering so logs appear immediately even if podman buffers or we hang on futex */
+	setvbuf(stdout, NULL, _IONBF, 0);
 	sigset_t sig_set;
 	struct timespec now, before, deadline_time;
 	clockid_t clockid = CLOCK_MONOTONIC;
@@ -663,9 +665,13 @@ int main(int argc, char *argv[]) {
 	prctl(PR_SET_NAME, (unsigned long)task_config.name, 0, 0, 0);
 	prctl(PR_GET_NAME, pr_name, 0, 0, 0);
 
-	/* Set real-time priority */
-	if (set_realtime_priority(task_config.priority) == -1) {
-		fprintf(stderr, "Warning: Could not set real-time priority. Running as normal priority.\n");
+	/* Set real-time priority (skip if BPF mode — scx_timpani manages scheduling) */
+	if (!use_bpf) {
+		if (set_realtime_priority(task_config.priority) == -1) {
+			fprintf(stderr, "Warning: Could not set real-time priority. Running as normal priority.\n");
+		}
+	} else {
+		printf("[BPF mode] Skipping SCHED_FIFO — BPF scheduler (scx_timpani) will manage this task.\n");
 	}
 
 	/* Setup signal handling */
