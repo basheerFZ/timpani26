@@ -300,27 +300,11 @@ Do not add new external dependencies without explicit instruction.
 | `timpani26` | Mainline — team-reviewed, stable | All developers |
 | `dev/design-docs` | DDR documents (pending team review → MR to timpani26) | PL |
 | `dev/sh-agent-md` | Agent instruction files (PL only, never merge to timpani26) | PL |
-| `dev/timpani26-implementation-phase1` | Active implementation — Phase 1 | Developers + AI agents |
-
-### Working Branch Rule
-
-**Always work on `dev/timpani26-implementation-phase1`.**
-
-```bash
-git checkout dev/timpani26-implementation-phase1
-git pull origin dev/timpani26-implementation-phase1
-```
-
-- Read task from `.agent/tasks/<task>.md`
-- Implement, build, test
-- Commit to `dev/timpani26-implementation-phase1`
-- Push and request review from PL
 
 ### Task File Lifecycle
 
 ```bash
 # Task assigned: file appears in .agent/tasks/
-git pull origin dev/timpani26-implementation-phase1
 cat .agent/tasks/<task>.md
 
 # Task complete: PL removes file with dedicated commit
