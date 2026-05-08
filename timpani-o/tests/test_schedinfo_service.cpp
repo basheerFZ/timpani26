@@ -73,9 +73,9 @@ protected:
 TEST_F(SchedInfoServiceTest, ConstructorInitializesCorrectly) {
     ASSERT_NE(service_impl_, nullptr);
 
-    // Test that the service starts with empty schedule info
-    auto sched_info_map = service_impl_->GetSchedInfoMap();
-    EXPECT_TRUE(sched_info_map.empty());
+    // Test that the service starts with empty schedule tables
+    auto sched_tables = service_impl_->GetScheduleTables();
+    EXPECT_TRUE(sched_tables.empty());
 }
 
 TEST_F(SchedInfoServiceTest, AddSchedInfoSuccess) {
@@ -90,7 +90,7 @@ TEST_F(SchedInfoServiceTest, AddSchedInfoSuccess) {
     // For this test, we're mainly checking that the call doesn't crash
 
     // Verify that the service handled the request
-    auto sched_info_map = service_impl_->GetSchedInfoMap();
+    auto sched_tables = service_impl_->GetScheduleTables();
     // The map might be empty if scheduling failed, but the service should handle it gracefully
 }
 
@@ -125,11 +125,9 @@ TEST_F(SchedInfoServiceTest, AddSchedInfoMultipleWorkloadsNotSupported) {
     Status status2 = service_impl_->AddSchedInfo(&context2, &sched_info2, &reply2);
     EXPECT_TRUE(status2.ok());
 
-    // If the first workload was successfully added, the second should fail
-    auto sched_info_map = service_impl_->GetSchedInfoMap();
-    if (!sched_info_map.empty()) {
-        EXPECT_EQ(reply2.status(), -1); // Should fail due to multiple workload limitation
-    }
+    // Both workloads can now coexist in the schedule table map
+    auto sched_tables = service_impl_->GetScheduleTables();
+    // With GlobalScheduler, multiple workloads are supported
 }
 
 TEST_F(SchedInfoServiceTest, AddSchedInfoWithDifferentPolicies) {
@@ -191,7 +189,7 @@ TEST_F(SchedInfoServiceTest, GetSchedInfoMapThreadSafety) {
 
     for (int i = 0; i < 5; ++i) {
         threads.emplace_back([this, &results, i]() {
-            auto sched_info_map = service_impl_->GetSchedInfoMap();
+            auto sched_tables = service_impl_->GetScheduleTables();
             results[i] = true; // Thread completed successfully
         });
     }
@@ -237,9 +235,9 @@ TEST_F(SchedInfoServerTest, StartAndStopServer) {
     server_->Stop();
 }
 
-TEST_F(SchedInfoServerTest, GetSchedInfoMapWhenEmpty) {
-    auto sched_info_map = server_->GetSchedInfoMap();
-    EXPECT_TRUE(sched_info_map.empty());
+TEST_F(SchedInfoServerTest, GetScheduleTablesWhenEmpty) {
+    auto sched_tables = server_->GetScheduleTables();
+    EXPECT_TRUE(sched_tables.empty());
 }
 
 TEST_F(SchedInfoServerTest, DumpSchedInfoWhenEmpty) {

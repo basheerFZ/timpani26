@@ -7,727 +7,617 @@
 #include "tlog.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
-#include <cstring>
-#include <iomanip>
-#include <iostream>
+#include <numeric>
+#include <set>
 
-GlobalScheduler::GlobalScheduler(std::shared_ptr<NodeConfigManager> node_config_manager)
+using namespace timpani::node::v1;
+
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
+
+GlobalScheduler::GlobalScheduler(
+    std::shared_ptr<NodeConfigManager> node_config_manager)
     : node_config_manager_(node_config_manager)
 {
-    TLOG_INFO("GlobalScheduler created with NodeConfigManager");
-    if (node_config_manager_) {
-        TLOG_DEBUG("NodeConfigManager pointer is valid");
-        if (node_config_manager_->IsLoaded()) {
-            TLOG_INFO("NodeConfigManager is loaded, initializing available CPUs");
-            initialize_available_cpus();
-            initialize_cpu_utilization_tracking();
+    TLOG_INFO("GlobalScheduler created (DDR-007 TT+CBS pipeline)");
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+ScheduleResult GlobalScheduler::generate_schedule(
+    const std::string& node_id,
+    const std::vector<ClassifiedTask>& tasks)
+{
+    if (tasks.empty()) {
+        return InfeasibleError(InfeasibleReason::UtilizationExceeded, -1, "",
+                               "No tasks provided");
+    }
+
+    TLOG_INFO("=== GlobalScheduler: generating schedule for node '",
+              node_id, "' with ", tasks.size(), " tasks ===");
+
+    // ── Step 1: Separate by mechanism (already classified by caller) ──
+    std::vector<ClassifiedTask> tt_tasks;
+    std::vector<ClassifiedTask> cbs_tasks;
+
+    for (const auto& t : tasks) {
+        if (t.mechanism == Mechanism::TT) {
+            tt_tasks.push_back(t);
         } else {
-            TLOG_WARN("NodeConfigManager is not loaded yet");
-        }
-    } else {
-        TLOG_ERROR("NodeConfigManager pointer is null!");
-    }
-}
-
-GlobalScheduler::~GlobalScheduler()
-{
-    cleanup_schedules();
-}
-
-void GlobalScheduler::set_tasks(const std::vector<Task>& tasks)
-{
-    tasks_ = tasks;
-    TLOG_INFO("GlobalScheduler: Set ", tasks_.size(), " tasks for scheduling");
-
-    // Log task details
-    for (const auto& task : tasks_) {
-        TLOG_DEBUG("Task: ", task.name,
-                  " | Workload: ", task.workload_id,
-                  " | Target Node: ", task.target_node,
-                  " | Priority: ", task.priority,
-                  " | Period: ", task.period_us, "us",
-                  " | Runtime: ", task.runtime_us, "us");
-    }
-}
-
-bool GlobalScheduler::schedule(const std::string& algorithm)
-{
-    if (tasks_.empty()) {
-        TLOG_ERROR("No tasks to schedule");
-        return false;
-    }
-
-    if (!node_config_manager_ || !node_config_manager_->IsLoaded()) {
-        TLOG_ERROR("Node configuration not available");
-        if (!node_config_manager_) {
-            TLOG_ERROR("  - NodeConfigManager pointer is null");
-        } else {
-            TLOG_ERROR("  - NodeConfigManager is not loaded");
-        }
-        return false;
-    }
-
-    // Clear previous schedules
-    cleanup_schedules();
-
-    // Reinitialize available CPUs and utilization tracking
-    initialize_available_cpus();
-    initialize_cpu_utilization_tracking();
-
-    // Apply pre-loaded utilization from existing workloads (after zeroing)
-    apply_preloaded_utilization();
-
-    TLOG_INFO("=== Starting GlobalScheduler with algorithm: ", algorithm, " ===");
-    TLOG_INFO("Tasks to schedule: ", tasks_.size());
-    TLOG_INFO("Available nodes: ", available_cpus_per_node_.size());
-
-    // Execute scheduling algorithm based on new requirements
-    if (algorithm == "target_node_priority") {
-        schedule_with_target_node_priority();
-    } else if (algorithm == "least_loaded") {
-        schedule_with_least_loaded();
-    } else if (algorithm == "best_fit_decreasing") {
-        schedule_with_best_fit_decreasing();
-    } else {
-        TLOG_ERROR("Unknown scheduling algorithm: ", algorithm);
-        return false;
-    }    // Generate final schedules
-    generate_schedules();
-
-    // Print results
-    print_scheduling_results();
-
-    return has_schedules();
-}
-
-void GlobalScheduler::schedule_with_least_loaded()
-{
-    TLOG_INFO("Executing Least Loaded scheduling algorithm");
-
-    int scheduled_count = 0;
-
-    for (auto& task : tasks_) {
-        std::string best_node = find_best_node_least_loaded(task);
-
-        if (!best_node.empty()) {
-            task.assigned_node = best_node;
-            task.assigned_cpu = available_cpus_per_node_[best_node].front();
-            available_cpus_per_node_[best_node].erase(
-                available_cpus_per_node_[best_node].begin());
-            scheduled_count++;
-            TLOG_INFO("  ✓ Task '", task.name, "' → Node '", best_node,
-                      "' (CPU ", task.assigned_cpu, ")");
-        } else {
-            TLOG_WARN("  ✗ Task '", task.name,
-                      "' could not be scheduled (no suitable node)");
+            cbs_tasks.push_back(t);
         }
     }
 
-    TLOG_INFO("Scheduled ", scheduled_count, "/", tasks_.size(), " tasks");
-}
+    TLOG_INFO("  L1 TT tasks: ", tt_tasks.size(),
+              ", L2 CBS tasks: ", cbs_tasks.size());
 
-void GlobalScheduler::schedule_with_best_fit_decreasing()
-{
-    TLOG_INFO("Executing Best Fit Decreasing scheduling algorithm");
+    // ── Step 2: CPU assignment ──
+    std::map<int, PerCpuSchedule> cpu_schedules;
+    if (!assign_cpus(node_id, tt_tasks, cbs_tasks, cpu_schedules)) {
+        return InfeasibleError(InfeasibleReason::UtilizationExceeded, -1, "",
+                               "CPU assignment failed — no isolated CPUs available for node '"
+                               + node_id + "'");
+    }
 
-    // Sort tasks by execution time in decreasing order
-    std::sort(tasks_.begin(), tasks_.end(), [](const Task& a, const Task& b) {
-        return a.runtime_us > b.runtime_us;
-    });
-
-    int scheduled_count = 0;
-
-    for (auto& task : tasks_) {
-        std::string best_node;
-
-        // Check if task has a target node specified
-        if (!task.target_node.empty()) {
-            // Try to schedule on the specified target node
-            if (is_task_schedulable_on_node(task, task.target_node) &&
-                !available_cpus_per_node_[task.target_node].empty()) {
-                best_node = task.target_node;
-                TLOG_DEBUG("Using target node ", task.target_node, " for task ", task.name);
-            } else {
-                TLOG_WARN("Target node ", task.target_node, " not available for task ", task.name);
+    // ── Step 3: TT slot placement (per CPU) ──
+    for (auto& [cpu_id, sched] : cpu_schedules) {
+        // Collect TT tasks assigned to this CPU
+        std::vector<ClassifiedTask> cpu_tt;
+        for (const auto& t : tt_tasks) {
+            if (t.assigned_cpu == cpu_id) {
+                cpu_tt.push_back(t);
             }
-        } else {
-            // Use normal best fit decreasing algorithm
-            best_node = find_best_node_best_fit_decreasing(task);
         }
 
-        if (!best_node.empty()) {
-            task.assigned_node = best_node;
+        if (cpu_tt.empty()) continue;
 
-            // Handle CPU affinity
-            if (task.affinity != "any" && !task.affinity.empty()) {
-                try {
-                    int required_cpu = std::stoi(task.affinity);
-                    // Check if the required CPU is available
-                    auto& available_cpus = available_cpus_per_node_[best_node];
-                    auto cpu_it = std::find(available_cpus.begin(),
-                                            available_cpus.end(), required_cpu);
-                    if (cpu_it != available_cpus.end()) {
-                        task.assigned_cpu = required_cpu;
-                        available_cpus.erase(cpu_it);
-                    } else {
-                        // Required CPU not available, use any available CPU
-                        task.assigned_cpu = available_cpus.front();
-                        available_cpus.erase(available_cpus.begin());
-                        TLOG_WARN("    ⚠ CPU ", required_cpu,
-                                  " not available, using CPU ", task.assigned_cpu);
-                    }
-                } catch (const std::exception&) {
-                    // Invalid affinity format, use any available CPU
-                    task.assigned_cpu = available_cpus_per_node_[best_node].front();
-                    available_cpus_per_node_[best_node].erase(
-                        available_cpus_per_node_[best_node].begin());
-                }
-            } else {
-                // Use any available CPU
-                task.assigned_cpu = available_cpus_per_node_[best_node].front();
-                available_cpus_per_node_[best_node].erase(
-                    available_cpus_per_node_[best_node].begin());
+        // Collect periods for hyperperiod calculation
+        std::vector<uint64_t> periods;
+        for (const auto& t : cpu_tt) {
+            if (t.period_us > 0) {
+                periods.push_back(t.period_us);
             }
+        }
 
-            scheduled_count++;
-            TLOG_INFO("  ✓ Task '", task.name, "' → Node '", best_node,
-                      "' (CPU ", task.assigned_cpu,
-                      ", Exec=", task.runtime_us/1000, "ms)");
-        } else {
-            TLOG_WARN("  ✗ Task '", task.name, "' could not be scheduled");
-            if (!task.target_node.empty()) {
-                TLOG_WARN("    (target node '", task.target_node, "' not available)");
-            } else {
-                TLOG_WARN("    (no suitable node found)");
+        // Validate harmonic periods
+        if (!validate_harmonic(periods)) {
+            std::string detail = "Non-harmonic periods on CPU " + std::to_string(cpu_id) + ":";
+            for (auto p : periods) detail += " " + std::to_string(p);
+            return InfeasibleError(InfeasibleReason::NonHarmonicPeriod,
+                                   cpu_id, "", detail);
+        }
+
+        uint64_t hp_us = calculate_hyperperiod(periods);
+
+        InfeasibleError err;
+        if (!place_tt_slots(cpu_id, cpu_tt, hp_us, sched, err)) {
+            return err;
+        }
+    }
+
+    // ── Compute global hyperperiod across all CPUs ──
+    std::vector<uint64_t> all_periods;
+    for (const auto& t : tt_tasks) {
+        if (t.period_us > 0) all_periods.push_back(t.period_us);
+    }
+    for (const auto& t : cbs_tasks) {
+        if (t.period_us > 0) all_periods.push_back(t.period_us);
+    }
+    uint64_t global_hp = all_periods.empty() ? 0 : calculate_hyperperiod(all_periods);
+
+    // ── Step 4: Gap analysis + CBS allocation (per CPU) ──
+    for (auto& [cpu_id, sched] : cpu_schedules) {
+        // Use global hyperperiod for gap computation
+        uint64_t hp_us = global_hp;
+        if (hp_us == 0) {
+            // If no periods, use a default; shouldn't happen with valid tasks
+            hp_us = 10000; // 10ms default
+        }
+
+        sched.gaps = compute_gaps(sched.tt_slots, hp_us);
+
+        // Collect CBS tasks assigned to this CPU
+        std::vector<ClassifiedTask> cpu_cbs;
+        for (const auto& t : cbs_tasks) {
+            if (t.assigned_cpu == cpu_id) {
+                cpu_cbs.push_back(t);
+            }
+        }
+
+        if (!cpu_cbs.empty()) {
+            InfeasibleError err;
+            if (!allocate_cbs_budgets(cpu_id, cpu_cbs, sched.u_tt,
+                                       sched.gaps, sched, err)) {
+                return err;
             }
         }
     }
 
-    TLOG_INFO("Scheduled ", scheduled_count, "/", tasks_.size(), " tasks");
+    // ── Step 5: Build protobuf table ──
+    auto table = build_table(node_id, cpu_schedules, global_hp);
+    return table;
 }
 
-std::string GlobalScheduler::find_best_node_least_loaded(const Task& task)
+// ---------------------------------------------------------------------------
+// Step 2: CPU Assignment (DDR-007 §3.3 + §6)
+// ---------------------------------------------------------------------------
+
+bool GlobalScheduler::assign_cpus(
+    const std::string& node_id,
+    std::vector<ClassifiedTask>& tt_tasks,
+    std::vector<ClassifiedTask>& cbs_tasks,
+    std::map<int, PerCpuSchedule>& cpu_schedules)
 {
-    std::string best_node = "";
-    double lowest_utilization = 1.0;
-
-    for (const auto& pair : available_cpus_per_node_) {
-        const std::string& node_id = pair.first;
-        const std::vector<int>& cpus = pair.second;
-
-        if (cpus.empty()) continue;
-        if (!is_task_schedulable_on_node(task, node_id)) continue;
-
-        double utilization = calculate_node_utilization(node_id);
-        if (utilization < lowest_utilization) {
-            lowest_utilization = utilization;
-            best_node = node_id;
-        }
+    // Get available isolated CPUs from node config
+    std::vector<int> available_cpus;
+    if (node_config_manager_ && node_config_manager_->IsLoaded()) {
+        available_cpus = node_config_manager_->GetAvailableCpus(node_id);
     }
 
-    return best_node;
-}
-
-std::string GlobalScheduler::find_best_node_best_fit_decreasing(const Task& task)
-{
-    std::string best_node = "";
-    double best_fit_utilization = -1.0;
-
-    for (const auto& pair : available_cpus_per_node_) {
-        const std::string& node_id = pair.first;
-        const std::vector<int>& cpus = pair.second;
-
-        if (cpus.empty()) continue;
-        if (!is_task_schedulable_on_node(task, node_id)) continue;
-
-        double current_utilization = calculate_node_utilization(node_id);
-        double new_utilization = calculate_node_utilization(node_id, true, &task);
-
-        // Best fit: find the node that will have the highest utilization after
-        // assignment but still be schedulable
-        if (new_utilization <= 1.0 && new_utilization > best_fit_utilization) {
-            best_fit_utilization = new_utilization;
-            best_node = node_id;
-        }
-    }
-
-    return best_node;
-}
-
-void GlobalScheduler::generate_schedules()
-{
-    TLOG_INFO("=== Generating Node Schedules ===");
-
-    // Initialize schedules for all nodes that have tasks
-    std::map<std::string, int> task_counts;
-    for (const auto& task : tasks_) {
-        if (!task.assigned_node.empty()) {
-            task_counts[task.assigned_node]++;
-        }
-    }
-
-    // Allocate memory and populate schedules
-    for (const auto& pair : task_counts) {
-        const std::string& node_id = pair.first;
-        int count = pair.second;
-
-        sched_info_map_[node_id].num_tasks = count;
-        sched_info_map_[node_id].tasks = (sched_task_t*)malloc(sizeof(sched_task_t) * count);
-
-        int task_index = 0;
-        for (const auto& task : tasks_) {
-            if (task.assigned_node == node_id) {
-                sched_task_t& sched_task = sched_info_map_[node_id].tasks[task_index];
-
-                strncpy(sched_task.task_name, task.name.c_str(),
-                        sizeof(sched_task.task_name) - 1);
-                sched_task.task_name[sizeof(sched_task.task_name) - 1] = '\0';
-
-                sched_task.period_ns = task.period_us * 1000;      // Convert to nanoseconds
-                sched_task.runtime_ns = task.runtime_us * 1000;    // Convert to nanoseconds
-                sched_task.deadline_ns = task.deadline_us * 1000;  // Convert to nanoseconds
-                sched_task.cpu_affinity = task.assigned_cpu;
-                sched_task.sched_policy = task.policy;             // Default to FIFO
-                sched_task.sched_priority = task.priority;
-                sched_task.release_time = task.release_time; // Release time in microseconds
-                sched_task.max_dmiss = task.max_dmiss;
-
-                strncpy(sched_task.assigned_node, task.assigned_node.c_str(),
-                        sizeof(sched_task.assigned_node) - 1);
-                sched_task.assigned_node[sizeof(sched_task.assigned_node) - 1] = '\0';
-
-                task_index++;
-            }
-        }
-
-        TLOG_INFO("Generated schedule for node '", node_id, "' with ", count, " tasks");
-    }
-}
-
-bool GlobalScheduler::is_task_schedulable_on_node(const Task& task, const std::string& node_id)
-{
-    // Check if node exists in configuration
-    if (!node_config_manager_) {
-        return true; // Allow if no config manager
-    }
-
-    const NodeConfig* node_config = node_config_manager_->GetNodeConfig(node_id);
-    if (!node_config) {
-        // Node not in configuration, but allow scheduling if CPUs are available
-        return available_cpus_per_node_.find(node_id) != available_cpus_per_node_.end() &&
-               !available_cpus_per_node_.at(node_id).empty();
-    }
-
-    // Check memory requirement
-    if (task.memory_mb > node_config->max_memory_mb) {
-        return false;
-    }
-
-    // Check CPU affinity
-    if (task.affinity != "any" && !task.affinity.empty()) {
-        try {
-            int required_cpu = std::stoi(task.affinity);
-            const auto& available_cpus = available_cpus_per_node_.at(node_id);
-            return std::find(available_cpus.begin(), available_cpus.end(), required_cpu) != available_cpus.end();
-        } catch (const std::exception&) {
-            // Invalid affinity format, treat as "any"
-        }
-    }
-
-    return true;
-}
-
-double GlobalScheduler::calculate_node_utilization(const std::string& node_id, bool include_new_task, const Task* new_task)
-{
-    double utilization = 0.0;
-
-    // Calculate utilization from already assigned tasks
-    for (const auto& task : tasks_) {
-        if (task.assigned_node == node_id) {
-            if (task.period_us > 0) {
-                utilization += (double)task.runtime_us / task.period_us;
-            }
-        }
-    }
-
-    // Add new task if specified
-    if (include_new_task && new_task && new_task->period_us > 0) {
-        utilization += (double)new_task->runtime_us / new_task->period_us;
-    }
-
-    return utilization;
-}
-
-void GlobalScheduler::initialize_available_cpus()
-{
-    available_cpus_per_node_.clear();
-
-    if (!node_config_manager_ || !node_config_manager_->IsLoaded()) {
-        TLOG_WARN("No node configuration available, cannot initialize CPUs");
-        return;
-    }
-
-    const auto& nodes = node_config_manager_->GetAllNodes();
-    for (const auto& pair : nodes) {
-        const std::string& node_id = pair.first;
-        const NodeConfig& config = pair.second;
-
-        available_cpus_per_node_[node_id] = config.available_cpus;
-        TLOG_INFO("Initialized node '", node_id, "' with ", config.available_cpus.size(), " CPUs");
-    }
-}
-
-void GlobalScheduler::print_scheduling_results()
-{
-    TLOG_INFO("=== GlobalScheduler Results ===");
-
-    // Group tasks by workload for better reporting
-    std::map<std::string, int> workload_task_counts;
-    for (const auto& task : tasks_) {
-        if (!task.assigned_node.empty()) {
-            workload_task_counts[task.workload_id]++;
-        }
-    }
-
-    // Print workload summary
-    for (const auto& wl_entry : workload_task_counts) {
-        TLOG_INFO("Workload '", wl_entry.first, "': ", wl_entry.second, " tasks scheduled");
-    }
-
-    for (const auto& pair : sched_info_map_) {
-        const std::string& node_id = pair.first;
-        const sched_info_t& schedule = pair.second;
-
-        TLOG_INFO("Node: ", node_id, " (", schedule.num_tasks, " tasks)");
-
-        if (schedule.num_tasks > 0) {
-            for (int i = 0; i < schedule.num_tasks; i++) {
-                const sched_task_t& task = schedule.tasks[i];
-                // Find workload_id for this task
-                std::string task_workload = "unknown";
-                for (const auto& orig_task : tasks_) {
-                    if (orig_task.name == task.task_name && orig_task.assigned_node == node_id) {
-                        task_workload = orig_task.workload_id;
-                        break;
-                    }
-                }
-                TLOG_INFO("  Task: ", task.task_name, " (workload: ", task_workload, ")",
-                         " | Period: ", task.period_ns / 1000000, "ms",
-                         " | Runtime: ", task.runtime_ns / 1000000, "ms",
-                         " | CPU: ", task.cpu_affinity,
-                         " | Priority: ", task.sched_priority);
-            }
-            print_node_details(node_id);
-        } else {
-            TLOG_INFO("  (No tasks assigned)");
-        }
-    }
-}
-
-void GlobalScheduler::print_node_details(const std::string& node_id)
-{
-    double node_utilization = calculate_node_utilization(node_id);
-    TLOG_INFO("  Node Utilization: ", (node_utilization * 100.0), "%");
-
-    // Print CPU-level utilization details
-    if (cpu_utilization_per_node_.find(node_id) != cpu_utilization_per_node_.end()) {
-        for (const auto& cpu_pair : cpu_utilization_per_node_[node_id]) {
-            int cpu_id = cpu_pair.first;
-            double cpu_util = cpu_pair.second;
-            if (cpu_util > 0.0) {
-                TLOG_INFO("    CPU ", cpu_id, ": ", (cpu_util * 100.0), "% utilization");
-            }
-        }
-    }
-
-    auto it = available_cpus_per_node_.find(node_id);
-    if (it != available_cpus_per_node_.end()) {
-        size_t cpu_count = it->second.size();
-        if (node_utilization > 1.0 * cpu_count) {
-            TLOG_WARN("  ⚠ WARNING: Node is over-utilized!");
-        } else if (node_utilization > CPU_UTILIZATION_THRESHOLD * cpu_count) {
-            TLOG_WARN("  ⚠ Node is highly utilized");
-        } else {
-            TLOG_INFO("  ✓ Node utilization is acceptable");
-        }
-    } else {
-        TLOG_WARN("  ⚠ Node ID '", node_id, "' not found in available_cpus_per_node_");
-    }
-}
-
-void GlobalScheduler::cleanup_schedules()
-{
-    for (auto& pair : sched_info_map_) {
-        if (pair.second.tasks) {
-            free(pair.second.tasks);
-            pair.second.tasks = nullptr;
-        }
-        pair.second.num_tasks = 0;
-    }
-    sched_info_map_.clear();
-}
-
-const NodeSchedInfoMap& GlobalScheduler::get_sched_info_map() const
-{
-    return sched_info_map_;
-}
-
-bool GlobalScheduler::has_schedules() const
-{
-    return !sched_info_map_.empty();
-}
-
-size_t GlobalScheduler::get_total_scheduled_tasks() const
-{
-    size_t total = 0;
-    for (const auto& pair : sched_info_map_) {
-        total += pair.second.num_tasks;
-    }
-    return total;
-}
-
-void GlobalScheduler::clear()
-{
-    cleanup_schedules();
-    tasks_.clear();
-    available_cpus_per_node_.clear();
-    cpu_utilization_per_node_.clear();
-    preloaded_schedules_.clear();
-    TLOG_INFO("GlobalScheduler cleared");
-}
-
-void GlobalScheduler::preload_utilization(const std::vector<NodeSchedInfoMap>& existing_schedules)
-{
-    preloaded_schedules_ = existing_schedules;
-    TLOG_DEBUG("Registered ", existing_schedules.size(),
-              " existing workload(s) for utilization preload");
-}
-
-void GlobalScheduler::apply_preloaded_utilization()
-{
-    if (preloaded_schedules_.empty()) return;
-
-    for (const auto& node_sched_info : preloaded_schedules_) {
-        for (const auto& entry : node_sched_info) {
-            const std::string& node_id = entry.first;
-            const sched_info_t& sched_info = entry.second;
-
-            for (int i = 0; i < sched_info.num_tasks; i++) {
-                const sched_task_t& task = sched_info.tasks[i];
-                if (task.period_ns > 0) {
-                    double utilization =
-                        static_cast<double>(task.runtime_ns) / task.period_ns;
-                    int cpu_id = static_cast<int>(task.cpu_affinity);
-                    if (cpu_utilization_per_node_.count(node_id) &&
-                        cpu_utilization_per_node_[node_id].count(cpu_id)) {
-                        cpu_utilization_per_node_[node_id][cpu_id] += utilization;
-                    }
-                }
-            }
-        }
-    }
-
-    TLOG_DEBUG("Applied pre-loaded utilization from ", preloaded_schedules_.size(),
-              " existing workload(s)");
-    preloaded_schedules_.clear();
-}
-
-void GlobalScheduler::schedule_with_target_node_priority()
-{
-    TLOG_INFO("Executing Target Node Priority scheduling algorithm");
-
-    int scheduled_count = 0;
-
-    for (auto& task : tasks_) {
-        // Validate that task has both workload_id and target_node
-        if (task.workload_id.empty()) {
-            TLOG_ERROR("Task '", task.name, "' has no workload_id specified");
-            continue;
-        }
-
-        // Rule 1: target_node must be assigned as assigned_node
-        if (task.target_node.empty()) {
-            TLOG_ERROR("Task '", task.name, "' (workload: ", task.workload_id, ") has no target_node specified");
-            continue;
-        }
-
-        // Check if target node exists and has available CPUs
-        if (available_cpus_per_node_.find(task.target_node) == available_cpus_per_node_.end()) {
-            TLOG_ERROR("Target node '", task.target_node, "' not found in configuration");
-            continue;
-        }
-
-        if (available_cpus_per_node_[task.target_node].empty()) {
-            TLOG_WARN("Target node '", task.target_node, "' has no available CPUs for task '", task.name, "'");
-            continue;
-        }
-
-        // Rule 1: Assign target_node as assigned_node
-        task.assigned_node = task.target_node;
-
-        // Rules 2 & 3: Find best CPU within target node
-        int best_cpu = find_best_cpu_for_task(task, task.target_node);
-
-        if (best_cpu != -1) {
-            if (assign_task_to_node_cpu(task, task.target_node, best_cpu)) {
-                scheduled_count++;
-                TLOG_INFO("  ✓ Task '", task.name, "' → Node '", task.target_node,
-                          "' (CPU ", best_cpu, ", Affinity: ", task.affinity, ")");
-            } else {
-                TLOG_WARN("  ✗ Failed to assign task '", task.name, "' to CPU ", best_cpu);
-            }
-        } else {
-            TLOG_WARN("  ✗ No suitable CPU found for task '", task.name,
-                      "' on target node '", task.target_node, "'");
-        }
-    }
-
-    TLOG_INFO("Scheduled ", scheduled_count, "/", tasks_.size(), " tasks");
-}
-
-int GlobalScheduler::find_best_cpu_for_task(const Task& task, const std::string& node_id)
-{
-    auto& available_cpus = available_cpus_per_node_[node_id];
     if (available_cpus.empty()) {
-        return -1;
+        // Fallback: use default CPUs [2, 3] for isolated scheduling
+        available_cpus = {2, 3};
+        TLOG_WARN("No CPU config for node '", node_id,
+                  "', using default isolated CPUs [2, 3]");
     }
 
-    double task_utilization = (task.period_us > 0) ?
-                              (double)task.runtime_us / task.period_us : 0.0;
+    // Sort CPUs for deterministic assignment
+    std::sort(available_cpus.begin(), available_cpus.end());
 
-    // Rule 2: If task has specific CPU affinity, prioritize it
-    if (task.affinity != "any" && !task.affinity.empty()) {
-        try {
-            int required_cpu = std::stoi(task.affinity);
+    // Initialize PerCpuSchedule for each available CPU
+    for (int cpu : available_cpus) {
+        cpu_schedules[cpu] = PerCpuSchedule(cpu);
+    }
 
-            // Check if required CPU is available in target node
-            auto cpu_it = std::find(available_cpus.begin(), available_cpus.end(), required_cpu);
-            if (cpu_it != available_cpus.end()) {
-                // Check utilization threshold
-                double current_util = calculate_cpu_utilization(node_id, required_cpu);
-                if (current_util + task_utilization <= CPU_UTILIZATION_THRESHOLD) {
-                    TLOG_DEBUG("Using specific CPU affinity ", required_cpu, " for task ", task.name);
-                    return required_cpu;
-                } else {
-                    TLOG_WARN("Required CPU ", required_cpu, " would exceed utilization threshold");
-                }
-            } else {
-                TLOG_WARN("Required CPU ", required_cpu, " not available in node ", node_id);
-            }
-        } catch (const std::exception&) {
-            TLOG_WARN("Invalid CPU affinity format: ", task.affinity, ", treating as 'any'");
+    // ① L1 TT tasks: assign to dedicated CPUs per workload
+    //    Group TT tasks by workload_id, assign each workload to a separate CPU
+    std::map<std::string, std::vector<size_t>> tt_workload_groups;
+    for (size_t i = 0; i < tt_tasks.size(); ++i) {
+        tt_workload_groups[tt_tasks[i].workload_id].push_back(i);
+    }
+
+    size_t cpu_idx = 0;
+    std::map<std::string, int> tt_workload_cpu;  // workload_id → assigned CPU
+
+    for (const auto& [wl_id, task_indices] : tt_workload_groups) {
+        if (cpu_idx >= available_cpus.size()) {
+            // Ran out of CPUs — share with the last one
+            cpu_idx = available_cpus.size() - 1;
+            TLOG_WARN("Not enough isolated CPUs for dedicated TT assignment; "
+                      "sharing CPU ", available_cpus[cpu_idx],
+                      " for workload '", wl_id, "'");
         }
-    }
 
-    // Rule 3: For 'any' affinity, use Smart Packing Algorithm
-    // Strategy: Start from highest CPU number, pack until 80% utilization
-    std::vector<int> sorted_cpus = available_cpus;
+        int cpu = available_cpus[cpu_idx];
+        tt_workload_cpu[wl_id] = cpu;
 
-    // Sort by CPU number (highest first) for consistent packing strategy
-    std::sort(sorted_cpus.begin(), sorted_cpus.end(), std::greater<int>());
-
-    // Find first CPU that can accommodate the task without exceeding threshold
-    for (int cpu : sorted_cpus) {
-        double current_util = calculate_cpu_utilization(node_id, cpu);
-        if (current_util + task_utilization <= CPU_UTILIZATION_THRESHOLD) {
-            TLOG_DEBUG("Selected CPU ", cpu, " for task ", task.name,
-                      " (util: ", (current_util * 100), "% + ", (task_utilization * 100),
-                      "% = ", ((current_util + task_utilization) * 100), "%)");
-            return cpu;
-        }
-    }
-
-    TLOG_WARN("No CPU can accommodate task ", task.name, " (requires ",
-              (task_utilization * 100), "% utilization)");
-    return -1;
-}
-
-std::vector<int> GlobalScheduler::get_sorted_cpus_by_utilization(const std::string& node_id, bool prefer_high_utilization)
-{
-    auto& available_cpus = available_cpus_per_node_[node_id];
-    std::vector<int> sorted_cpus = available_cpus;
-
-    // Sort CPUs by utilization and CPU number
-    std::sort(sorted_cpus.begin(), sorted_cpus.end(),
-        [this, &node_id, prefer_high_utilization](int cpu_a, int cpu_b) {
-            double util_a = calculate_cpu_utilization(node_id, cpu_a);
-            double util_b = calculate_cpu_utilization(node_id, cpu_b);
-
-            // Primary criterion: utilization (prefer high utilization to pack tasks)
-            if (std::abs(util_a - util_b) > 0.01) { // 1% threshold
-                return prefer_high_utilization ? (util_a > util_b) : (util_a < util_b);
+        double wl_util = 0.0;
+        for (size_t idx : task_indices) {
+            tt_tasks[idx].assigned_cpu = cpu;
+            if (tt_tasks[idx].period_us > 0) {
+                wl_util += static_cast<double>(tt_tasks[idx].wcet_us) /
+                           tt_tasks[idx].period_us;
             }
+        }
+        cpu_schedules[cpu].u_tt += wl_util;
 
-            // Secondary criterion: prefer higher CPU numbers
-            return cpu_a > cpu_b;
+        TLOG_INFO("  TT workload '", wl_id, "' → CPU ", cpu,
+                  " (", task_indices.size(), " tasks, U_tt=",
+                  cpu_schedules[cpu].u_tt, ")");
+        ++cpu_idx;
+    }
+
+    // ② L2 CBS tasks: worst-fit decreasing by residual capacity (DDR-007 §3.3)
+    //    Sort CBS tasks by utilization (decreasing)
+    std::vector<size_t> cbs_indices(cbs_tasks.size());
+    std::iota(cbs_indices.begin(), cbs_indices.end(), 0);
+    std::sort(cbs_indices.begin(), cbs_indices.end(),
+        [&cbs_tasks](size_t a, size_t b) {
+            double ua = (cbs_tasks[a].period_us > 0)
+                ? static_cast<double>(cbs_tasks[a].wcet_us) / cbs_tasks[a].period_us
+                : 0.0;
+            double ub = (cbs_tasks[b].period_us > 0)
+                ? static_cast<double>(cbs_tasks[b].wcet_us) / cbs_tasks[b].period_us
+                : 0.0;
+            return ua > ub;  // decreasing
         });
 
-    return sorted_cpus;
-}
+    for (size_t idx : cbs_indices) {
+        double us = (cbs_tasks[idx].period_us > 0)
+            ? static_cast<double>(cbs_tasks[idx].wcet_us) / cbs_tasks[idx].period_us
+            : 0.0;
 
-bool GlobalScheduler::assign_task_to_node_cpu(Task& task, const std::string& node_id, int cpu_id)
-{
-    auto& available_cpus = available_cpus_per_node_[node_id];
+        // Find CPU with the most residual capacity (worst-fit)
+        int best_cpu = -1;
+        double best_residual = -1.0;
 
-    // Check if CPU exists in available list
-    auto cpu_it = std::find(available_cpus.begin(), available_cpus.end(), cpu_id);
-    if (cpu_it == available_cpus.end()) {
-        TLOG_ERROR("CPU ", cpu_id, " not found in available CPUs for node ", node_id);
-        return false;
+        for (int cpu : available_cpus) {
+            double residual = U_BOUND - cpu_schedules[cpu].u_tt -
+                              cpu_schedules[cpu].u_cbs - U_OVERHEAD;
+            if (residual >= us && residual > best_residual) {
+                best_residual = residual;
+                best_cpu = cpu;
+            }
+        }
+
+        if (best_cpu < 0) {
+            TLOG_ERROR("No CPU can accommodate CBS task '",
+                       cbs_tasks[idx].task_id, "' (U_s=", us, ")");
+            return false;
+        }
+
+        cbs_tasks[idx].assigned_cpu = best_cpu;
+        cpu_schedules[best_cpu].u_cbs += us;
+
+        TLOG_INFO("  CBS task '", cbs_tasks[idx].task_id, "' → CPU ", best_cpu,
+                  " (U_s=", us, ", residual=", best_residual - us, ")");
     }
-
-    // Calculate new utilization if task is assigned
-    double task_utilization = (task.period_us > 0) ?
-                              (double)task.runtime_us / task.period_us : 0.0;
-    double current_cpu_util = calculate_cpu_utilization(node_id, cpu_id);
-    double new_cpu_util = current_cpu_util + task_utilization;
-
-    // Check utilization threshold (90% max)
-    if (new_cpu_util > CPU_UTILIZATION_THRESHOLD) {
-        TLOG_WARN("CPU ", cpu_id, " utilization would exceed threshold (",
-                  (new_cpu_util * 100), "% > ", (CPU_UTILIZATION_THRESHOLD * 100), "%)");
-        return false;
-    }
-
-    // Assign to task
-    task.assigned_cpu = cpu_id;
-
-    // Update CPU utilization (don't remove from available - allow multiple tasks per CPU)
-    cpu_utilization_per_node_[node_id][cpu_id] = new_cpu_util;
-
-    TLOG_DEBUG("Assigned task '", task.name, "' to CPU ", cpu_id,
-               " (utilization: ", (current_cpu_util * 100), "% → ", (new_cpu_util * 100), "%)");
 
     return true;
 }
 
-double GlobalScheduler::calculate_cpu_utilization(const std::string& node_id, int cpu_id)
+// ---------------------------------------------------------------------------
+// Step 3: TT Slot Placement (DDR-007 §3.4)
+// ---------------------------------------------------------------------------
+
+bool GlobalScheduler::place_tt_slots(
+    int cpu,
+    const std::vector<ClassifiedTask>& tt_tasks,
+    uint64_t hyperperiod_us,
+    PerCpuSchedule& schedule,
+    InfeasibleError& error)
 {
-    if (cpu_utilization_per_node_.find(node_id) == cpu_utilization_per_node_.end()) {
-        return 0.0;
+    if (hyperperiod_us == 0) {
+        error = InfeasibleError(InfeasibleReason::TtSlotConflict, cpu, "",
+                                "Hyperperiod is zero");
+        return false;
     }
 
-    if (cpu_utilization_per_node_[node_id].find(cpu_id) == cpu_utilization_per_node_[node_id].end()) {
-        return 0.0;
-    }
+    // Sort by deadline (DM ordering — shorter deadline first)
+    std::vector<ClassifiedTask> sorted = tt_tasks;
+    std::sort(sorted.begin(), sorted.end(),
+        [](const ClassifiedTask& a, const ClassifiedTask& b) {
+            return a.deadline_us < b.deadline_us;
+        });
 
-    return cpu_utilization_per_node_[node_id][cpu_id];
-}
+    // Timeline occupancy tracking: set of occupied intervals [start, end)
+    struct Interval {
+        uint32_t start;
+        uint32_t end;
+    };
+    std::vector<Interval> occupied;
 
-void GlobalScheduler::initialize_cpu_utilization_tracking()
-{
-    cpu_utilization_per_node_.clear();
+    auto find_free_slot = [&occupied](uint32_t start, uint32_t duration,
+                                       uint32_t deadline_end) -> int32_t {
+        uint32_t candidate = start;
+        // Scan forward for a gap that can hold 'duration' before deadline_end
+        while (candidate + duration <= deadline_end) {
+            bool conflict = false;
+            for (const auto& occ : occupied) {
+                if (candidate < occ.end && candidate + duration > occ.start) {
+                    // Jump past this occupied interval
+                    candidate = occ.end;
+                    conflict = true;
+                    break;
+                }
+            }
+            if (!conflict) {
+                return static_cast<int32_t>(candidate);
+            }
+        }
+        return -1;  // No free slot found
+    };
 
-    for (const auto& pair : available_cpus_per_node_) {
-        const std::string& node_id = pair.first;
-        const std::vector<int>& cpus = pair.second;
+    for (const auto& task : sorted) {
+        if (task.period_us == 0) continue;
 
-        for (int cpu : cpus) {
-            cpu_utilization_per_node_[node_id][cpu] = 0.0;
+        uint64_t repeats = hyperperiod_us / task.period_us;
+        for (uint64_t k = 0; k < repeats; ++k) {
+            uint32_t frame_start = static_cast<uint32_t>(k * task.period_us);
+            uint32_t frame_end   = frame_start + task.deadline_us;
+            if (frame_end > hyperperiod_us) {
+                frame_end = static_cast<uint32_t>(hyperperiod_us);
+            }
+
+            int32_t offset = find_free_slot(frame_start, task.wcet_us, frame_end);
+            if (offset < 0) {
+                error = InfeasibleError(InfeasibleReason::TtSlotConflict, cpu,
+                    task.task_id,
+                    "TT slot conflict in frame [" + std::to_string(frame_start) +
+                    ", " + std::to_string(frame_end) + ") on CPU " +
+                    std::to_string(cpu));
+                return false;
+            }
+
+            TtSlotPlacement slot;
+            slot.workload_id = task.workload_id;
+            slot.task_id     = task.task_id;
+            slot.offset_us   = static_cast<uint32_t>(offset);
+            slot.duration_us = task.wcet_us;
+            slot.deadline_us = task.deadline_us;
+            slot.cpu         = cpu;
+
+            schedule.tt_slots.push_back(slot);
+            occupied.push_back({static_cast<uint32_t>(offset),
+                                static_cast<uint32_t>(offset) + task.wcet_us});
         }
     }
 
-    TLOG_DEBUG("Initialized CPU utilization tracking for ",
-               cpu_utilization_per_node_.size(), " nodes");
+    // Sort slots by offset for gap computation
+    std::sort(schedule.tt_slots.begin(), schedule.tt_slots.end(),
+        [](const TtSlotPlacement& a, const TtSlotPlacement& b) {
+            return a.offset_us < b.offset_us;
+        });
+
+    TLOG_INFO("  CPU ", cpu, ": placed ", schedule.tt_slots.size(),
+              " TT slots in hyperperiod ", hyperperiod_us, "us");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Step 4-A: Gap Extraction (DDR-007 §3.5)
+// ---------------------------------------------------------------------------
+
+std::vector<GapInterval> GlobalScheduler::compute_gaps(
+    const std::vector<TtSlotPlacement>& slots,
+    uint64_t hyperperiod_us)
+{
+    std::vector<GapInterval> gaps;
+    uint32_t cursor = 0;
+
+    // Slots must be sorted by offset (done in place_tt_slots)
+    for (const auto& slot : slots) {
+        if (cursor < slot.offset_us) {
+            GapInterval gap;
+            gap.start_us  = cursor;
+            gap.end_us    = slot.offset_us;
+            gap.length_us = slot.offset_us - cursor;
+            gaps.push_back(gap);
+        }
+        uint32_t slot_end = slot.offset_us + slot.duration_us;
+        if (slot_end > cursor) {
+            cursor = slot_end;
+        }
+    }
+
+    // Trailing gap after last slot
+    if (cursor < static_cast<uint32_t>(hyperperiod_us)) {
+        GapInterval gap;
+        gap.start_us  = cursor;
+        gap.end_us    = static_cast<uint32_t>(hyperperiod_us);
+        gap.length_us = static_cast<uint32_t>(hyperperiod_us) - cursor;
+        gaps.push_back(gap);
+    }
+
+    return gaps;
+}
+
+// ---------------------------------------------------------------------------
+// Step 4-B/C/D: CBS Budget Allocation (DDR-007 §3.5)
+// ---------------------------------------------------------------------------
+
+bool GlobalScheduler::allocate_cbs_budgets(
+    int cpu,
+    const std::vector<ClassifiedTask>& cbs_tasks,
+    double u_tt,
+    const std::vector<GapInterval>& gaps,
+    PerCpuSchedule& schedule,
+    InfeasibleError& error)
+{
+    double u_avail = U_BOUND - u_tt - U_OVERHEAD;
+
+    if (u_avail <= 0.0) {
+        error = InfeasibleError(InfeasibleReason::NoCbsBandwidth, cpu, "",
+            "No residual bandwidth on CPU " + std::to_string(cpu) +
+            " (U_tt=" + std::to_string(u_tt) + ")");
+        return false;
+    }
+
+    // Check minimum gap condition
+    if (!gaps.empty()) {
+        uint32_t min_gap = gaps[0].length_us;
+        for (const auto& g : gaps) {
+            if (g.length_us < min_gap) min_gap = g.length_us;
+        }
+        if (min_gap < CBS_MIN_EXEC_US) {
+            TLOG_WARN("CPU ", cpu, ": minimum gap ", min_gap,
+                      "us < CBS_MIN_EXEC_US (", CBS_MIN_EXEC_US, "us)");
+        }
+    }
+
+    // Sort CBS tasks by utilization (decreasing) for fail-fast (DDR-007 §3.5 4-D)
+    std::vector<ClassifiedTask> sorted = cbs_tasks;
+    std::sort(sorted.begin(), sorted.end(),
+        [](const ClassifiedTask& a, const ClassifiedTask& b) {
+            double ua = (a.period_us > 0)
+                ? static_cast<double>(a.wcet_us) / a.period_us : 0.0;
+            double ub = (b.period_us > 0)
+                ? static_cast<double>(b.wcet_us) / b.period_us : 0.0;
+            return ua > ub;
+        });
+
+    double u_alloc = 0.0;
+
+    for (const auto& task : sorted) {
+        double us = (task.period_us > 0)
+            ? static_cast<double>(task.wcet_us) / task.period_us : 0.0;
+
+        if (u_alloc + us > u_avail) {
+            // L2 is SafetyCritical — cannot reject silently (DDR-007 §3.5 4-D)
+            error = InfeasibleError(InfeasibleReason::SafetyCbsExceeded, cpu,
+                task.task_id,
+                "CBS task '" + task.task_id + "' requires U_s=" +
+                std::to_string(us) + " but only " +
+                std::to_string(u_avail - u_alloc) + " available on CPU " +
+                std::to_string(cpu));
+            return false;
+        }
+
+        CbsAllocation alloc;
+        alloc.workload_id = task.workload_id;
+        alloc.task_id     = task.task_id;
+        alloc.budget_us   = task.wcet_us;      // Cs = WCET
+        alloc.period_us   = task.period_us;     // Ts = MIT
+        alloc.deadline_us = task.deadline_us;
+        alloc.cpu         = cpu;
+
+        schedule.cbs_allocations.push_back(alloc);
+        u_alloc += us;
+    }
+
+    schedule.u_cbs = u_alloc;
+
+    TLOG_INFO("  CPU ", cpu, ": allocated ", schedule.cbs_allocations.size(),
+              " CBS budgets (U_cbs=", u_alloc,
+              ", U_total=", u_tt + u_alloc + U_OVERHEAD, ")");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Step 5: Build HierarchicalScheduleTable (DDR-007 §3.6)
+// ---------------------------------------------------------------------------
+
+timpani::node::v1::HierarchicalScheduleTable GlobalScheduler::build_table(
+    const std::string& node_id,
+    const std::map<int, PerCpuSchedule>& cpu_schedules,
+    uint64_t hyperperiod_us)
+{
+    HierarchicalScheduleTable table;
+    table.set_table_id("table_v1");
+    table.set_node_id(node_id);
+    table.set_hyperperiod_us(static_cast<uint32_t>(hyperperiod_us));
+
+    // epoch_ns = current wall-clock time (CLOCK_REALTIME)
+    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    table.set_epoch_ns(static_cast<uint64_t>(now_ns));
+
+    int total_tt = 0;
+    int total_cbs = 0;
+
+    for (const auto& [cpu_id, sched] : cpu_schedules) {
+        // Skip CPUs with no assignments
+        if (sched.tt_slots.empty() && sched.cbs_allocations.empty()) {
+            continue;
+        }
+
+        // One PartitionConfig per isolated CPU (DDR-007 §3.6)
+        PartitionConfig* partition = table.add_partitions();
+        partition->set_partition_id("isolated-" + std::to_string(cpu_id));
+
+        CpuSetSpec* cpuset = partition->mutable_cpuset();
+        cpuset->add_cpus(static_cast<uint32_t>(cpu_id));
+        cpuset->set_isolated(true);
+
+        // Single layer with both TT slots and CBS entries
+        LayerConfig* layer = partition->add_layers();
+        layer->set_layer_index(1);
+        layer->set_model(ExecutionModel::TIME_TRIGGERED);
+
+        // Populate TT slots
+        for (const auto& slot : sched.tt_slots) {
+            TtSlot* tt = layer->add_tt_slots();
+            tt->set_workload_id(slot.workload_id);
+            tt->set_task_id(slot.task_id);
+            tt->set_offset_us(slot.offset_us);
+            tt->set_duration_us(slot.duration_us);
+            tt->set_deadline_us(slot.deadline_us);
+            tt->set_cpu(static_cast<uint32_t>(slot.cpu));
+            tt->set_workload_id_hash(fnv1a_hash(slot.workload_id.c_str()));
+            tt->set_task_id_hash(fnv1a_hash(slot.task_id.c_str()));
+            ++total_tt;
+        }
+
+        // Populate CBS entries
+        for (const auto& alloc : sched.cbs_allocations) {
+            CbsConfig* cbs = layer->add_cbs_entries();
+            cbs->set_workload_id(alloc.workload_id);
+            cbs->set_task_id(alloc.task_id);
+            cbs->set_budget_us(alloc.budget_us);
+            cbs->set_period_us(alloc.period_us);
+            cbs->set_deadline_us(alloc.deadline_us);
+            cbs->set_workload_id_hash(fnv1a_hash(alloc.workload_id.c_str()));
+            cbs->set_task_id_hash(fnv1a_hash(alloc.task_id.c_str()));
+            ++total_cbs;
+        }
+    }
+
+    TLOG_INFO("BuildScheduleTable: node='", node_id,
+              "' partitions=", table.partitions_size(),
+              " tt_slots=", total_tt,
+              " cbs_entries=", total_cbs,
+              " hyperperiod=", hyperperiod_us, "us");
+
+    return table;
+}
+
+// ---------------------------------------------------------------------------
+// Math utilities
+// ---------------------------------------------------------------------------
+
+uint64_t GlobalScheduler::gcd(uint64_t a, uint64_t b)
+{
+    while (b != 0) {
+        uint64_t temp = b;
+        b = a % b;
+        a = temp;
+    }
+    return a;
+}
+
+uint64_t GlobalScheduler::lcm(uint64_t a, uint64_t b)
+{
+    if (a == 0 || b == 0) return 0;
+    return (a / gcd(a, b)) * b;
+}
+
+uint64_t GlobalScheduler::calculate_hyperperiod(
+    const std::vector<uint64_t>& periods)
+{
+    if (periods.empty()) return 0;
+
+    uint64_t result = periods[0];
+    for (size_t i = 1; i < periods.size(); ++i) {
+        result = lcm(result, periods[i]);
+        if (result > 3600000000ULL) {  // 1 hour in microseconds
+            TLOG_WARN("Hyperperiod very large: ", result / 1000000, " seconds");
+        }
+    }
+    return result;
+}
+
+bool GlobalScheduler::validate_harmonic(const std::vector<uint64_t>& periods)
+{
+    if (periods.size() <= 1) return true;
+
+    // Deduplicate and sort
+    std::set<uint64_t> unique_set(periods.begin(), periods.end());
+    std::vector<uint64_t> sorted(unique_set.begin(), unique_set.end());
+    std::sort(sorted.begin(), sorted.end());
+
+    // Harmonic condition: for every pair, the larger must be divisible by the smaller
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        for (size_t j = i + 1; j < sorted.size(); ++j) {
+            if (sorted[j] % sorted[i] != 0) {
+                TLOG_WARN("Non-harmonic periods: ", sorted[i], " and ", sorted[j]);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+uint64_t GlobalScheduler::fnv1a_hash(const char* s)
+{
+    uint64_t hash = 14695981039346656037ULL;
+    while (*s) {
+        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(*s++));
+        hash *= 1099511628211ULL;
+    }
+    return hash;
 }

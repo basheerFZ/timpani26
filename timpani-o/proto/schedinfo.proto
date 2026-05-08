@@ -31,6 +31,15 @@ enum SchedPolicy {
   RR = 2;
 }
 
+// Temporal class for workload classification (DDR-001/DDR-007)
+// Determines the scheduling mechanism:
+//   TEMPORAL_PERIODIC → L1 → Time-Triggered (TT)
+//   TEMPORAL_SPORADIC → L2 → Constant Bandwidth Server (CBS)
+enum TemporalClass {
+  TEMPORAL_PERIODIC = 0;
+  TEMPORAL_SPORADIC = 1;
+}
+
 message TaskInfo {
   // Unique task name
   string name = 1;
@@ -57,6 +66,10 @@ message TaskInfo {
 message SchedInfo {
   string workload_id = 1;
   repeated TaskInfo tasks = 2;
+  // Workload temporal class — classifies the entire workload (DDR-007 §3.2)
+  // All tasks in a SchedInfo share the same scheduling level.
+  // Default (0 = TEMPORAL_PERIODIC) → L1 TT for backward compatibility.
+  TemporalClass temporal_class = 3;
 }
 
 enum FaultType {
