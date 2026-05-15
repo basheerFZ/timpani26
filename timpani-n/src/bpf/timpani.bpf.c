@@ -10,11 +10,15 @@
 #define _LINUX_TYPES_H // Prevent linux/types.h redefinition clash with vmlinux.h
 #include "maps.h"
 
-// SCX DSQ IDs — simple integers to avoid kernel validation issues
-#define DSQ_TT_WAIT   100
-#define DSQ_CBS       101
-#define DSQ_THROTTLED 102
-#define DSQ_BE        103
+// SCX DSQ IDs
+// TT tasks use SCX_DSQ_LOCAL_ON | cpu directly — no per-CPU TT DSQs.
+#define DSQ_CBS           101
+#define DSQ_THROTTLED     102
+#define DSQ_BE            103
+
+/* Isolated CPU bitmask injected by BpfLoader before attach.
+ * Used by select_cpu() and enqueue() to validate assigned_cpu. */
+volatile const __u64 isolated_cpu_mask = 0;
 
 // SCX_DSQ_LOCAL and SCX_SLICE_DFL are enums in vmlinux.h
 // Removing incorrect macro fallbacks that redefine them to 0
@@ -59,13 +63,6 @@ struct {
     __uint(max_entries, 4096 * 16);
 } fault_ringbuf SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 128); // Max CPUs
-    __type(key, __u32);
-    __type(value, __u32);
-} kick_map SEC(".maps");
-
 // SCX helpers (kfuncs) usually predefined if correctly linked, or we can declare them as extern
 extern s32 scx_bpf_create_dsq(__u64 dsq_id, __s32 node) __ksym;
 extern void scx_bpf_dispatch(struct task_struct *p, __u64 dsq_id, u64 slice, u64 enq_flags) __ksym;
@@ -74,11 +71,6 @@ extern void scx_bpf_kick_cpu(__s32 cpu, u64 flags) __ksym;
 
 SEC("struct_ops.s/init_task")
 int BPF_PROG(init_task, struct task_struct *p, struct scx_init_task_args *args) {
-    __u32 pid = p->pid;
-    struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
-    if (!meta) return 0;
-    /* Per-task DSQ creation removed — using global DSQ_TT_WAIT instead.
-     * init_task() runs before task_meta_map is populated, causing a race. */
     return 0;
 }
 
@@ -86,16 +78,12 @@ SEC("struct_ops/select_cpu")
 s32 BPF_PROG(select_cpu, struct task_struct *p, s32 prev_cpu, u64 wake_flags) {
     __u32 pid = p->pid;
     struct TaskMeta *meta = bpf_map_lookup_elem(&task_meta_map, &pid);
-    if (meta) {
-        struct PartitionInfo *pinfo = bpf_map_lookup_elem(&partition_map, &meta->cgroup_id);
-        if (pinfo && pinfo->cpu_mask != 0) {
-            __u64 mask = pinfo->cpu_mask;
-            /* Manual bit-scan: BPF ISA has no ffs instruction */
-            #pragma unroll
-            for (int i = 0; i < 64; i++) {
-                if (mask & (1ULL << i))
-                    return (s32)i;
-            }
+    if (meta && (meta->scheduling_type == SCHED_TYPE_TT ||
+                 meta->scheduling_type == SCHED_TYPE_CBS)) {
+        /* Steer to the CPU assigned in the schedule table */
+        __u32 cpu = meta->assigned_cpu;
+        if (cpu < 64 && (isolated_cpu_mask & (1ULL << cpu))) {
+            return (s32)cpu;
         }
     }
     return prev_cpu;
@@ -111,7 +99,16 @@ void BPF_PROG(enqueue, struct task_struct *p, u64 enq_flags) {
     }
 
     if (meta->scheduling_type == SCHED_TYPE_TT) {
-        scx_bpf_dispatch(p, DSQ_TT_WAIT, SCX_SLICE_DFL, enq_flags);
+        /* Dispatch directly to the assigned CPU's local DSQ, then kick that
+         * CPU if idle so it immediately picks up the task. */
+        __u32 acpu = meta->assigned_cpu;
+        if (acpu < 64 && (isolated_cpu_mask & (1ULL << acpu))) {
+            scx_bpf_dispatch(p, SCX_DSQ_LOCAL_ON | acpu, SCX_SLICE_DFL, enq_flags);
+            scx_bpf_kick_cpu(acpu, SCX_KICK_IDLE);
+        } else {
+            /* Fallback: global DSQ (should not happen in normal operation) */
+            scx_bpf_dispatch(p, SCX_DSQ_GLOBAL, SCX_SLICE_DFL, enq_flags);
+        }
     } else if (meta->scheduling_type == SCHED_TYPE_CBS) {
         /* N1: CBS budget check — throttle if budget exhausted */
         struct CbsState *cbs = bpf_map_lookup_elem(&cbs_map, &meta->task_id_hash);
@@ -136,30 +133,12 @@ void BPF_PROG(enqueue, struct task_struct *p, u64 enq_flags) {
 
 SEC("struct_ops/dispatch")
 void BPF_PROG(dispatch, s32 cpu, struct task_struct *prev) {
-    __u32 key = cpu;
+    /* TT tasks: dispatched via SCX_DSQ_LOCAL_ON in enqueue() — already on
+     * this CPU's local DSQ, no additional consume needed here. */
 
-    /* N3: Check kick_map — userspace signals which CPUs need rescheduling */
-    __u32 *kick_flag = bpf_map_lookup_elem(&kick_map, &key);
-    if (kick_flag && *kick_flag) {
-        *kick_flag = 0;  // Clear the flag
-        scx_bpf_kick_cpu(cpu, 0);
-    }
-
-    __u32 *slot_idx = bpf_map_lookup_elem(&current_slot_map, &key);
-    if (slot_idx && *slot_idx != SLOT_NONE) {
-        struct TtSlotKey tt_key = { .cpu = cpu, .slot_idx = *slot_idx };
-        struct TtSlotBpf *slot = bpf_map_lookup_elem(&tt_table_map, &tt_key);
-        if (slot) {
-            // Consume from global TT wait queue (all TT tasks go here)
-            if (scx_bpf_consume(DSQ_TT_WAIT)) {
-                return;
-            }
-        }
-    }
-    
-    // consume CBS
+    /* 2nd priority: CBS */
     scx_bpf_consume(DSQ_CBS);
-    // consume BE
+    /* 3rd priority: BE */
     scx_bpf_consume(DSQ_BE);
 }
 
@@ -244,8 +223,8 @@ void BPF_PROG(stopping, struct task_struct *p, bool runnable) {
 
 SEC("struct_ops.s/init")
 s32 BPF_PROG(init) {
-    /* Initialize global custom DSQs */
-    scx_bpf_create_dsq(DSQ_TT_WAIT, -1);
+    /* TT tasks use SCX_DSQ_LOCAL_ON in enqueue() — no per-CPU TT DSQs needed.
+     * Only CBS, THROTTLED, and BE shared DSQs are required. */
     scx_bpf_create_dsq(DSQ_CBS, -1);
     scx_bpf_create_dsq(DSQ_THROTTLED, -1);
     scx_bpf_create_dsq(DSQ_BE, -1);

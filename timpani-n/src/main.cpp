@@ -350,12 +350,6 @@ int main(int argc, char** argv)
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
             uint32_t slot_idx = 0;
             for (const auto& partition : table.partitions()) {
-                // Build CPU affinity mask from partition cpuset
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                for (uint32_t cpu : partition.cpuset().cpus())
-                    CPU_SET(cpu, &cpuset);
-
                 for (const auto& layer : partition.layers()) {
                     for (const auto& tt_slot : layer.tt_slots()) {
                         // Apply SCHED_FIFO + affinity to matching process
@@ -389,6 +383,7 @@ int main(int argc, char** argv)
                             meta.task_id_hash = tt_slot.task_id_hash();
                             meta.scheduling_type = SCHED_TYPE_TT;
                             meta.layer = layer.layer_index();
+                            meta.assigned_cpu = static_cast<uint32_t>(tt_slot.cpu());
                             meta.activation_ns = 0;
                             meta.cgroup_id = 0; // TODO: resolve from cgroup path
                             if (bpf_loader.update_task_meta(
@@ -405,16 +400,10 @@ int main(int argc, char** argv)
                                           << std::endl;
                             }
 
-                            if (sched_setaffinity(pid, sizeof(cpuset),
-                                                  &cpuset) == 0)
-                                std::cout << "[main] Applied CPU affinity to "
-                                          << task_id << " pid=" << pid
-                                          << std::endl;
-                            else
-                                std::cerr
-                                    << "[main] sched_setaffinity failed for "
-                                    << task_id << " pid=" << pid
-                                    << " errno=" << errno << std::endl;
+                            /* sched_setaffinity is NOT used with scx_timpani:
+                             * CPU placement is enforced by BPF select_cpu() and
+                             * per-CPU DSQ dispatch. Calling setaffinity on an
+                             * isolated CPU partition returns EINVAL. */
                         }
 
                         // Add TimerMaster slot entry
@@ -425,6 +414,7 @@ int main(int argc, char** argv)
                             static_cast<uint64_t>(tt_slot.offset_us()) *
                             1000ULL;
                         entry.task_id_hash = tt_slot.task_id_hash();
+                        entry.task_name    = tt_slot.task_id();  /* comm name, e.g. "task_1" */
                         slots.push_back(entry);
 
                         // Populate BPF tt_table_map so dispatch() can consume from DSQ_TT_WAIT

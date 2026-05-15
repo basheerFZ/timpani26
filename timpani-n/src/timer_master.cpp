@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <climits>
 #include <csignal>
+#include <cstring>
 #include <iostream>
 #include <vector>
 
@@ -28,20 +29,23 @@ TimerMaster::TimerMaster(BpfLoader& bpf_loader)
       hyperperiod_ns_(0),
       epoch_ns_(0),
       shm_fd_(-1),
-      slot_counter_(nullptr)
+      ttsched_shm_(nullptr)
 {
-    // Create/open POSIX shm for ttsched futex wake
     shm_fd_ = shm_open("/timpani_ttsched", O_CREAT | O_RDWR, 0666);
     if (shm_fd_ >= 0) {
-        ftruncate(shm_fd_, sizeof(uint32_t));
-        slot_counter_ = static_cast<volatile uint32_t*>(
-            mmap(nullptr, sizeof(uint32_t), PROT_READ | PROT_WRITE, MAP_SHARED,
-                 shm_fd_, 0));
-        if (slot_counter_ == MAP_FAILED) {
-            slot_counter_ = nullptr;
+        if (ftruncate(shm_fd_, sizeof(struct timpani_ttsched_shm)) < 0) {
+            std::cerr << "[TimerMaster] ftruncate failed" << std::endl;
+        }
+        ttsched_shm_ = static_cast<volatile struct timpani_ttsched_shm*>(
+            mmap(nullptr, sizeof(struct timpani_ttsched_shm),
+                 PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_, 0));
+        if (ttsched_shm_ == MAP_FAILED) {
+            ttsched_shm_ = nullptr;
             std::cerr << "[TimerMaster] shm mmap failed" << std::endl;
         } else {
-            *slot_counter_ = 0;
+            /* Initialize: magic=0 (not ready), n_tasks=0 */
+            ttsched_shm_->magic   = 0;
+            ttsched_shm_->n_tasks = 0;
             std::cout << "[TimerMaster] shm /timpani_ttsched created"
                       << std::endl;
         }
@@ -54,8 +58,9 @@ TimerMaster::TimerMaster(BpfLoader& bpf_loader)
 TimerMaster::~TimerMaster()
 {
     stop();
-    if (slot_counter_ && slot_counter_ != MAP_FAILED)
-        munmap(const_cast<uint32_t*>(slot_counter_), sizeof(uint32_t));
+    if (ttsched_shm_ && ttsched_shm_ != MAP_FAILED)
+        munmap(const_cast<struct timpani_ttsched_shm*>(ttsched_shm_),
+               sizeof(struct timpani_ttsched_shm));
     if (shm_fd_ >= 0) close(shm_fd_);
     shm_unlink("/timpani_ttsched");
 }
@@ -71,6 +76,49 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
               [](const SlotEntry& a, const SlotEntry& b) {
                   return a.offset_ns < b.offset_ns;
               });
+
+    /* Publish per-task SHM slots for targeted wake.
+     * Collect unique tasks (same task may appear in multiple slots). */
+    if (ttsched_shm_) {
+        /* Clear ready flag first so tasks don't read a half-written table */
+        ttsched_shm_->magic = 0;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+        task_hash_to_shm_idx_.clear();
+        uint32_t shm_idx = 0;
+
+        for (const auto& entry : slot_table_) {
+            if (task_hash_to_shm_idx_.count(entry.task_id_hash)) continue;
+            if (shm_idx >= TIMPANI_MAX_TASKS) {
+                std::cerr << "[TimerMaster] Too many unique tasks (max "
+                          << TIMPANI_MAX_TASKS << ")" << std::endl;
+                break;
+            }
+            /* Write name and reset counter */
+            strncpy(const_cast<char*>(ttsched_shm_->tasks[shm_idx].name),
+                    entry.task_name.c_str(), 15);
+            ttsched_shm_->tasks[shm_idx].name[15] = '\0';
+            ttsched_shm_->tasks[shm_idx].counter  = 0;
+
+            task_hash_to_shm_idx_[entry.task_id_hash] = shm_idx;
+            std::cout << "[TimerMaster] SHM slot[" << shm_idx << "] = "
+                      << entry.task_name << " hash=0x" << std::hex
+                      << entry.task_id_hash << std::dec << std::endl;
+            shm_idx++;
+        }
+
+        /* Publish atomically: first n_tasks, then magic */
+        __atomic_store_n(
+            const_cast<uint32_t*>(&ttsched_shm_->n_tasks),
+            shm_idx, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            const_cast<uint32_t*>(&ttsched_shm_->magic),
+            TIMPANI_TTSCHED_MAGIC, __ATOMIC_RELEASE);
+
+        std::cout << "[TimerMaster] SHM published: " << shm_idx
+                  << " task slots ready" << std::endl;
+    }
+
     table_pending_ = true;  // signal idle loop to restart
 }
 
@@ -146,10 +194,8 @@ void TimerMaster::thread_loop()
                 (long long)wakeup_ts.tv_sec * 1000000000LL + wakeup_ts.tv_nsec;
             long long jitter = actual_ns - (long long)target_ns;
 
-            // C3: Update current slot to map directly
+            // C3: Update current slot map for deadline miss detection in stopping()
             bpf_loader_.update_current_slot(slot.cpu, slot.slot_idx);
-            // N3: Signal BPF to kick the target CPU for immediate reschedule
-            bpf_loader_.update_kick_cpu(slot.cpu);
 
             jitters.push_back(jitter);
 
@@ -194,7 +240,7 @@ void TimerMaster::thread_loop()
                 jitters.reserve(1500);
             }
 
-            wake_dummy_tasks();
+            wake_task(slot.task_id_hash);
 
             next_slot_idx++;
             if (next_slot_idx >= slot_table_.size()) {
@@ -205,14 +251,22 @@ void TimerMaster::thread_loop()
     }  // end outer loop
 }  // end thread_loop
 
-void TimerMaster::wake_dummy_tasks()
+void TimerMaster::wake_task(uint64_t task_id_hash)
 {
-    if (!slot_counter_) return;
-    // Increment counter and wake all FUTEX_WAIT waiters
-    __atomic_fetch_add(const_cast<uint32_t*>(slot_counter_), 1,
-                       __ATOMIC_SEQ_CST);
-    syscall(SYS_futex, const_cast<uint32_t*>(slot_counter_), FUTEX_WAKE,
-            INT_MAX, nullptr, nullptr, 0);
+    if (!ttsched_shm_) return;
+
+    auto it = task_hash_to_shm_idx_.find(task_id_hash);
+    if (it == task_hash_to_shm_idx_.end()) return;
+
+    int idx = it->second;
+    /* Increment per-task counter and wake exactly 1 waiter */
+    __atomic_fetch_add(
+        const_cast<uint32_t*>(&ttsched_shm_->tasks[idx].counter),
+        1u, __ATOMIC_SEQ_CST);
+    syscall(SYS_futex,
+            const_cast<uint32_t*>(&ttsched_shm_->tasks[idx].counter),
+            FUTEX_WAKE, 1,   /* wake only the ONE task waiting on this counter */
+            nullptr, nullptr, 0);
 }
 
 }  // namespace node
