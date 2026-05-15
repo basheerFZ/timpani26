@@ -7,8 +7,9 @@
 
 /* ---- /timpani_ttsched POSIX shared memory layout ---- */
 
-#define TIMPANI_TTSCHED_MAGIC  0x54494D50U  /* "TIMP" — set when schedule is ready */
-#define TIMPANI_MAX_TASKS      32
+#define TIMPANI_TTSCHED_MAGIC \
+    0x54494D50U /* "TIMP" — set when schedule is ready */
+#define TIMPANI_MAX_TASKS 32
 
 /**
  * Per-task wakeup slot.
@@ -16,8 +17,9 @@
  * The task calls FUTEX_WAIT on @counter to sleep until its next period.
  */
 struct timpani_task_slot {
-    char     name[16];   /* task comm name (PR_SET_NAME, <=15 chars + NUL) */
-    uint32_t counter;    /* monotonically incremented by TimerMaster per slot fire */
+    char name[16]; /* task comm name (PR_SET_NAME, <=15 chars + NUL) */
+    uint32_t
+        counter; /* monotonically incremented by TimerMaster per slot fire */
     uint32_t _pad;
 };
 
@@ -27,8 +29,9 @@ struct timpani_task_slot {
  * Read by task processes (O_RDONLY) — FUTEX_WAIT only needs read access.
  */
 struct timpani_ttsched_shm {
-    uint32_t magic;    /* TIMPANI_TTSCHED_MAGIC when schedule is ready, 0 otherwise */
-    uint32_t n_tasks;  /* number of active task slots (atomic RELEASE write) */
+    uint32_t
+        magic; /* TIMPANI_TTSCHED_MAGIC when schedule is ready, 0 otherwise */
+    uint32_t n_tasks; /* number of active task slots (atomic RELEASE write) */
     struct timpani_task_slot tasks[TIMPANI_MAX_TASKS];
 };
 
@@ -48,9 +51,16 @@ void ttsched_init(void);
 
 /**
  * ttsched_wait_next_period() - Block until TimerMaster fires this task's slot.
- * Falls back to usleep(1000) if SHM is not ready or slot not found yet.
+ *
+ * Returns:
+ *   0  — woken by TimerMaster (slot fired); caller should execute workload.
+ *  -1  — SHM not ready, slot not found, or shutdown detected (magic = 0);
+ *         caller must skip the workload and retry on the next call.
+ *
+ * Falls back to usleep(1000) and returns -1 if the schedule is not yet
+ * published or timpani-n is not running.
  */
-void ttsched_wait_next_period(void);
+int ttsched_wait_next_period(void);
 
 #ifdef __cplusplus
 }
