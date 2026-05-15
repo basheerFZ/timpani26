@@ -24,6 +24,35 @@
 #include "libttsched.h"
 #include "version.h"
 
+#ifndef SCHED_EXT
+#define SCHED_EXT		7
+#endif
+
+struct sched_attr_ext {
+	uint32_t size;
+	uint32_t sched_policy;
+	uint64_t sched_flags;
+	int32_t  sched_nice;
+	uint32_t sched_priority;
+	uint64_t sched_runtime;
+	uint64_t sched_deadline;
+	uint64_t sched_period;
+};
+
+static int set_sched_ext(void)
+{
+	struct sched_attr_ext attr;
+
+	memset(&attr, 0, sizeof(attr));
+	attr.size = sizeof(attr);
+	attr.sched_policy = SCHED_EXT;
+	if (syscall(SYS_sched_setattr, 0, &attr, 0) < 0) {
+		perror("sched_setattr SCHED_EXT");
+		return -1;
+	}
+	return 0;
+}
+
 #define ALGO_NSQRT	1
 #define ALGO_FIBO	2
 #define ALGO_BUSY	3
@@ -665,13 +694,15 @@ int main(int argc, char *argv[]) {
 	prctl(PR_SET_NAME, (unsigned long)task_config.name, 0, 0, 0);
 	prctl(PR_GET_NAME, pr_name, 0, 0, 0);
 
-	/* Set real-time priority (skip if BPF mode — scx_timpani manages scheduling) */
+	/* Set scheduling policy */
 	if (!use_bpf) {
 		if (set_realtime_priority(task_config.priority) == -1) {
 			fprintf(stderr, "Warning: Could not set real-time priority. Running as normal priority.\n");
 		}
 	} else {
-		printf("[BPF mode] Skipping SCHED_FIFO — BPF scheduler (scx_timpani) will manage this task.\n");
+		/* Set SCHED_EXT so scx_timpani (SCX_OPS_SWITCH_PARTIAL) takes over this task */
+		set_sched_ext();
+		printf("[BPF mode] Set SCHED_EXT policy — scx_timpani will manage this task.\n");
 	}
 
 	/* Setup signal handling */

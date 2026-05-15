@@ -87,5 +87,9 @@ RUN if [ "$TARGETARCH" = "amd64" ] || [ -z "$TARGETARCH" ]; then \
 COPY --from=builder /sample-apps/build/sample_apps /sample-apps/
 COPY --from=builder /sample-apps/build/libttsched.so /lib/
 
+# Multi-task wrapper script (1 container = N tasks workload)
+COPY run_5tasks.sh /sample-apps/run_5tasks.sh
+RUN chmod +x /sample-apps/run_5tasks.sh
+
 ENTRYPOINT ["/sample-apps/sample_apps"]
 CMD ["-h"]

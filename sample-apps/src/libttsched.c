@@ -2,33 +2,116 @@
 // SPDX-License-Identifier: MIT
 
 #include "libttsched.h"
+#include <errno.h>
 #include <stdint.h>
+#include <string.h>
 #include <unistd.h>
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <fcntl.h>
 #include <stddef.h>
 
-static volatile uint32_t* g_slot_counter = NULL;
+static volatile struct timpani_ttsched_shm *g_shm = NULL;
+static int g_task_idx = -1;  /* index into g_shm->tasks[], -1 = not found yet */
 
-void ttsched_init(void) {
-    // Basic PoC implementation.
-    // In a real implementation, this would shm_open the POSIX shared memory mapped to TimerMaster.
-    int fd = shm_open("/timpani_ttsched", O_RDONLY, 0666);
-    if (fd >= 0) {
-        g_slot_counter = (volatile uint32_t*)mmap(NULL, sizeof(uint32_t), PROT_READ, MAP_SHARED, fd, 0);
-        close(fd);
+static int find_task_slot(volatile struct timpani_ttsched_shm *shm,
+                          const char *name)
+{
+    uint32_t n, i;
+
+    if (shm->magic != TIMPANI_TTSCHED_MAGIC)
+        return -1;
+
+    n = shm->n_tasks;
+    for (i = 0; i < n && i < TIMPANI_MAX_TASKS; i++) {
+        if (strncmp((const char *)shm->tasks[i].name, name, 15) == 0)
+            return (int)i;
     }
+    return -1;
 }
 
-void ttsched_wait_next_period(void) {
-    if (g_slot_counter && g_slot_counter != MAP_FAILED) {
-        uint32_t current = *g_slot_counter;
-        // futex WAIT: sleep strictly linked to TimerMaster's slot update
-        syscall(SYS_futex, (uint32_t*)g_slot_counter, FUTEX_WAIT, current, NULL, NULL, 0);
-    } else {
-        // Fallback for PoC if shm is not loaded
-        usleep(1000);
+void ttsched_init(void)
+{
+    int fd = shm_open("/timpani_ttsched", O_RDONLY, 0666);
+    if (fd < 0)
+        return;
+
+    g_shm = (volatile struct timpani_ttsched_shm *)mmap(
+        NULL, sizeof(struct timpani_ttsched_shm),
+        PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+
+    if (g_shm == MAP_FAILED) {
+        g_shm = NULL;
+        return;
     }
+
+    /* Slot lookup: schedule may not be ready yet — retry in wait_next_period */
+    char my_name[16] = {};
+    prctl(PR_GET_NAME, my_name, 0, 0, 0);
+    g_task_idx = find_task_slot(g_shm, my_name);
+}
+
+void ttsched_wait_next_period(void)
+{
+    uint32_t current;
+
+    if (!g_shm) {
+        /* SHM not mapped yet — retry open/map on every call */
+        ttsched_init();
+        if (!g_shm) {
+            usleep(1000);
+            return;
+        }
+    }
+
+    /* Detect timpani-n restart: magic is zeroed by TimerMaster before it
+     * publishes a new schedule table (or remains 0 after shm_unlink +
+     * re-create).  Re-init to pick up the new SHM object. */
+    if (g_shm->magic != TIMPANI_TTSCHED_MAGIC) {
+        /* Unmap stale SHM and re-open the (possibly new) object */
+        munmap((void *)g_shm, sizeof(struct timpani_ttsched_shm));
+        g_shm      = NULL;
+        g_task_idx = -1;
+        ttsched_init();
+        if (!g_shm) {
+            usleep(1000);
+            return;
+        }
+        /* If still not ready (magic still 0), wait for schedule publish */
+        if (g_shm->magic != TIMPANI_TTSCHED_MAGIC) {
+            usleep(1000);
+            return;
+        }
+    }
+
+    /* Retry slot lookup if schedule arrived after ttsched_init() */
+    if (g_task_idx < 0) {
+        char my_name[16] = {};
+        prctl(PR_GET_NAME, my_name, 0, 0, 0);
+        g_task_idx = find_task_slot(g_shm, my_name);
+        if (g_task_idx < 0) {
+            usleep(1000);
+            return;
+        }
+    }
+
+    current = g_shm->tasks[g_task_idx].counter;
+    /*
+     * FUTEX_WAIT on this task's own counter word.
+     *
+     * Return cases:
+     *   0      — woken by TimerMaster FUTEX_WAKE: slot fired, proceed.
+     *   EAGAIN — counter already changed before we slept (slot fired just
+     *            before the syscall): proceed normally, no sleep needed.
+     *   EINTR  — interrupted by a signal (spurious wakeup): re-check and
+     *            go back to sleep.  Do NOT let the task run early.
+     */
+    while (syscall(SYS_futex,
+                   (uint32_t *)&g_shm->tasks[g_task_idx].counter,
+                   FUTEX_WAIT, current, NULL, NULL, 0) == -1 &&
+           errno == EINTR)
+        ; /* re-enter FUTEX_WAIT until genuinely woken or EAGAIN */
 }
