@@ -112,5 +112,14 @@ int ttsched_wait_next_period(void)
            errno ==
                EINTR); /* re-enter FUTEX_WAIT until genuinely woken or EAGAIN */
 
+    /* After wakeup: check if TimerMaster zeroed magic (shutdown signal).
+     * If so, invalidate our mapping so the next call triggers re-init. */
+    if (g_shm->magic != TIMPANI_TTSCHED_MAGIC) {
+        munmap((void*)g_shm, sizeof(struct timpani_ttsched_shm));
+        g_shm = NULL;
+        g_task_idx = -1;
+        return -1;
+    }
+
     return 0;
 }

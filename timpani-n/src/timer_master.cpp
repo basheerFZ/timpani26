@@ -44,7 +44,7 @@ TimerMaster::TimerMaster(BpfLoader& bpf_loader)
             std::cerr << "[TimerMaster] shm mmap failed" << std::endl;
         } else {
             /* Initialize: magic=0 (not ready), n_tasks=0 */
-            ttsched_shm_->magic   = 0;
+            ttsched_shm_->magic = 0;
             ttsched_shm_->n_tasks = 0;
             std::cout << "[TimerMaster] shm /timpani_ttsched created"
                       << std::endl;
@@ -54,13 +54,28 @@ TimerMaster::TimerMaster(BpfLoader& bpf_loader)
     }
 }
 
-
 TimerMaster::~TimerMaster()
 {
     stop();
-    if (ttsched_shm_ && ttsched_shm_ != MAP_FAILED)
+
+    if (ttsched_shm_ && ttsched_shm_ != MAP_FAILED) {
+        /* Signal shutdown to all waiting tasks:
+         * 1. Zero magic so tasks detect timpani-n is gone after wakeup.
+         * 2. FUTEX_WAKE on every task counter to unblock FUTEX_WAIT.
+         *    INT_MAX wakes all waiters regardless of count. */
+        __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->magic),
+                         0u, __ATOMIC_SEQ_CST);
+        uint32_t n = ttsched_shm_->n_tasks;
+        if (n > TIMPANI_MAX_TASKS) n = TIMPANI_MAX_TASKS;
+        for (uint32_t i = 0; i < n; i++) {
+            syscall(SYS_futex,
+                    const_cast<uint32_t*>(&ttsched_shm_->tasks[i].counter),
+                    FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
+        }
+
         munmap(const_cast<struct timpani_ttsched_shm*>(ttsched_shm_),
                sizeof(struct timpani_ttsched_shm));
+    }
     if (shm_fd_ >= 0) close(shm_fd_);
     shm_unlink("/timpani_ttsched");
 }
@@ -98,22 +113,20 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
             strncpy(const_cast<char*>(ttsched_shm_->tasks[shm_idx].name),
                     entry.task_name.c_str(), 15);
             ttsched_shm_->tasks[shm_idx].name[15] = '\0';
-            ttsched_shm_->tasks[shm_idx].counter  = 0;
+            ttsched_shm_->tasks[shm_idx].counter = 0;
 
             task_hash_to_shm_idx_[entry.task_id_hash] = shm_idx;
-            std::cout << "[TimerMaster] SHM slot[" << shm_idx << "] = "
-                      << entry.task_name << " hash=0x" << std::hex
+            std::cout << "[TimerMaster] SHM slot[" << shm_idx
+                      << "] = " << entry.task_name << " hash=0x" << std::hex
                       << entry.task_id_hash << std::dec << std::endl;
             shm_idx++;
         }
 
         /* Publish atomically: first n_tasks, then magic */
-        __atomic_store_n(
-            const_cast<uint32_t*>(&ttsched_shm_->n_tasks),
-            shm_idx, __ATOMIC_RELEASE);
-        __atomic_store_n(
-            const_cast<uint32_t*>(&ttsched_shm_->magic),
-            TIMPANI_TTSCHED_MAGIC, __ATOMIC_RELEASE);
+        __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->n_tasks), shm_idx,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->magic),
+                         TIMPANI_TTSCHED_MAGIC, __ATOMIC_RELEASE);
 
         std::cout << "[TimerMaster] SHM published: " << shm_idx
                   << " task slots ready" << std::endl;
@@ -194,7 +207,8 @@ void TimerMaster::thread_loop()
                 (long long)wakeup_ts.tv_sec * 1000000000LL + wakeup_ts.tv_nsec;
             long long jitter = actual_ns - (long long)target_ns;
 
-            // C3: Update current slot map for deadline miss detection in stopping()
+            // C3: Update current slot map for deadline miss detection in
+            // stopping()
             bpf_loader_.update_current_slot(slot.cpu, slot.slot_idx);
 
             jitters.push_back(jitter);
@@ -218,7 +232,8 @@ void TimerMaster::thread_loop()
                 std::cout << "  P99: " << jitters[990] << " ns" << std::endl;
                 std::cout << "  P999: " << jitters[999] << " ns" << std::endl;
 
-                std::cout << "\nHistogram (10us buckets, absolute jitter):" << std::endl;
+                std::cout << "\nHistogram (10us buckets, absolute jitter):"
+                          << std::endl;
                 int buckets[10] = {0};  // 0-10us, 10-20us...
                 int outliers = 0;
                 for (long long j : jitters) {
@@ -260,12 +275,10 @@ void TimerMaster::wake_task(uint64_t task_id_hash)
 
     int idx = it->second;
     /* Increment per-task counter and wake exactly 1 waiter */
-    __atomic_fetch_add(
-        const_cast<uint32_t*>(&ttsched_shm_->tasks[idx].counter),
-        1u, __ATOMIC_SEQ_CST);
-    syscall(SYS_futex,
-            const_cast<uint32_t*>(&ttsched_shm_->tasks[idx].counter),
-            FUTEX_WAKE, 1,   /* wake only the ONE task waiting on this counter */
+    __atomic_fetch_add(const_cast<uint32_t*>(&ttsched_shm_->tasks[idx].counter),
+                       1u, __ATOMIC_SEQ_CST);
+    syscall(SYS_futex, const_cast<uint32_t*>(&ttsched_shm_->tasks[idx].counter),
+            FUTEX_WAKE, 1, /* wake only the ONE task waiting on this counter */
             nullptr, nullptr, 0);
 }
 
