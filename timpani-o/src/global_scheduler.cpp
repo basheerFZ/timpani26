@@ -100,12 +100,9 @@ ScheduleResult GlobalScheduler::generate_schedule(
         }
     }
 
-    // ── Compute global hyperperiod across all CPUs ──
+    // ── Compute global hyperperiod across all CPUs (TT tasks only) ──
     std::vector<uint64_t> all_periods;
     for (const auto& t : tt_tasks) {
-        if (t.period_us > 0) all_periods.push_back(t.period_us);
-    }
-    for (const auto& t : cbs_tasks) {
         if (t.period_us > 0) all_periods.push_back(t.period_us);
     }
     uint64_t global_hp = all_periods.empty() ? 0 : calculate_hyperperiod(all_periods);
