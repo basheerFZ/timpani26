@@ -6,6 +6,7 @@
 #include <getopt.h>
 #include <sched.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <cctype>
@@ -179,6 +180,13 @@ std::string resolve_node_id(const RuntimeOptions& options)
     }
 
     return "node";
+}
+
+uint64_t monotonic_now_ns()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
 }
 }  // namespace
 
@@ -361,6 +369,7 @@ int main(int argc, char** argv)
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
         node_client.set_table_callback([&timer_master, &bpf_loader,
+                        &node_client,
                                         &runtime_options
 #ifdef CONFIG_TRACE_BPF_EVENT
                                         ,
@@ -392,7 +401,25 @@ int main(int argc, char** argv)
             // Build SlotEntry list from TtSlots
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
             uint32_t slot_idx = 0;
+            bool apply_success = true;
+            std::string apply_error;
+
+            auto record_apply_error = [&](const std::string& error) {
+                apply_success = false;
+                if (!apply_error.empty()) {
+                    apply_error += "; ";
+                }
+                apply_error += error;
+            };
+
             for (const auto& partition : table.partitions()) {
+                uint32_t partition_cpu = 0;
+                bool has_partition_cpu = partition.has_cpuset() &&
+                                         partition.cpuset().cpus_size() > 0;
+                if (has_partition_cpu) {
+                    partition_cpu = partition.cpuset().cpus(0);
+                }
+
                 for (const auto& layer : partition.layers()) {
                     for (const auto& tt_slot : layer.tt_slots()) {
                         // Apply SCHED_FIFO + affinity to matching process
@@ -402,6 +429,7 @@ int main(int argc, char** argv)
                             std::cerr
                                 << "[main] Task not found in /proc: " << task_id
                                 << std::endl;
+                            record_apply_error("TT task not found: " + task_id);
                         } else {
 #ifdef CONFIG_TRACE_BPF_EVENT
                             if (runtime_options.enable_plot &&
@@ -429,6 +457,7 @@ int main(int argc, char** argv)
                             meta.layer = layer.layer_index();
                             meta.assigned_cpu =
                                 static_cast<uint32_t>(tt_slot.cpu());
+                            meta.slot_duration_us = tt_slot.duration_us();
                             meta.activation_ns = 0;
                             meta.cgroup_id =
                                 0;  // TODO: resolve from cgroup path
@@ -453,6 +482,8 @@ int main(int argc, char** argv)
                                     << "[main] Failed to register task in "
                                        "BPF task_meta_map: "
                                     << task_id << " pid=" << pid << std::endl;
+                                record_apply_error("TT task_meta update failed: " +
+                                                   task_id);
                             }
 
                             /* sched_setaffinity is NOT used with scx_timpani:
@@ -467,6 +498,9 @@ int main(int argc, char** argv)
                         entry.slot_idx = slot_idx;
                         entry.offset_ns =
                             static_cast<uint64_t>(tt_slot.offset_us()) *
+                            1000ULL;
+                        entry.duration_ns =
+                            static_cast<uint64_t>(tt_slot.duration_us()) *
                             1000ULL;
                         entry.task_id_hash = tt_slot.task_id_hash();
                         entry.task_name =
@@ -484,9 +518,101 @@ int main(int argc, char** argv)
                         slot_bpf.duration_us = tt_slot.duration_us();
                         slot_bpf.deadline_us = tt_slot.deadline_us();
                         slot_bpf.cpu = tt_slot.cpu();
-                        bpf_loader.update_tt_slot(tt_key, slot_bpf);
+                        if (!bpf_loader.update_tt_slot(tt_key, slot_bpf)) {
+                            record_apply_error("TT slot update failed: " +
+                                               tt_slot.task_id());
+                        }
 
                         slot_idx++;
+                    }
+
+                    if (!has_partition_cpu && layer.cbs_entries_size() > 0) {
+                        record_apply_error("CBS partition has empty cpuset: " +
+                                           partition.partition_id());
+                    }
+
+                    for (const auto& cbs_entry : layer.cbs_entries()) {
+                        const std::string& task_id = cbs_entry.task_id();
+                        pid_t pid = find_pid_by_comm(task_id);
+                        if (pid < 0) {
+                            std::cerr << "[main] CBS task not found in /proc: "
+                                      << task_id << std::endl;
+                            record_apply_error("CBS task not found: " + task_id);
+                            continue;
+                        }
+
+#ifdef CONFIG_TRACE_BPF_EVENT
+                        if (runtime_options.enable_plot &&
+                            schedstat_monitor.is_active()) {
+                            if (schedstat_monitor.add_pid(pid)) {
+                                std::lock_guard<std::mutex> lock(
+                                    gpdata_pid_map_mutex);
+                                gpdata_pid_to_task[pid] = task_id;
+                            } else {
+                                std::cerr << "[main] Failed to register "
+                                             "CBS PID for gpdata: "
+                                          << pid << std::endl;
+                            }
+                        }
+#endif
+
+                        TaskMeta meta = {};
+                        meta.workload_id_hash = cbs_entry.workload_id_hash();
+                        meta.task_id_hash = cbs_entry.task_id_hash();
+                        meta.scheduling_type = SCHED_TYPE_CBS;
+                        meta.layer = layer.layer_index();
+                        meta.assigned_cpu = partition_cpu;
+                        meta.slot_duration_us = 0;
+                        meta.activation_ns = 0;
+                        meta.cgroup_id = 0;
+
+                        if (!bpf_loader.update_task_meta(
+                                static_cast<uint32_t>(pid), meta)) {
+                            std::cerr << "[main] Failed to register CBS task "
+                                         "in BPF task_meta_map: "
+                                      << task_id << " pid=" << pid << std::endl;
+                            record_apply_error("CBS task_meta update failed: " +
+                                               task_id);
+                            continue;
+                        }
+
+                        if (apply_sched_ext(pid) == 0) {
+                            std::cout << "[main] Applied SCHED_EXT to CBS "
+                                      << task_id << " pid=" << pid << std::endl;
+                        }
+
+                        CbsState cbs_state = {};
+                        cbs_state.task_id_hash = cbs_entry.task_id_hash();
+                        cbs_state.budget_us = cbs_entry.budget_us();
+                        cbs_state.period_us = cbs_entry.period_us();
+                        cbs_state.remaining_us = cbs_entry.budget_us();
+                        cbs_state.exec_start_ns = 0;
+                        cbs_state.replenish_at_ns =
+                            cbs_entry.period_us() > 0
+                                ? monotonic_now_ns() +
+                                      static_cast<uint64_t>(
+                                          cbs_entry.period_us()) *
+                                          1000ULL
+                                : 0;
+                        cbs_state.deadline_us = cbs_entry.deadline_us();
+
+                        uint64_t cbs_key = cbs_entry.workload_id_hash() ^
+                                           cbs_entry.task_id_hash();
+                        if (!bpf_loader.update_cbs_state(cbs_key, cbs_state)) {
+                            std::cerr << "[main] Failed to update CBS state: "
+                                      << task_id << std::endl;
+                            record_apply_error("CBS state update failed: " +
+                                               task_id);
+                            continue;
+                        }
+
+                        std::cout << "[main] Registered CBS task in BPF: "
+                                  << task_id << " pid=" << pid << " cpu="
+                                  << partition_cpu << " budget="
+                                  << cbs_state.budget_us << "us period="
+                                  << cbs_state.period_us << "us hash=0x"
+                                  << std::hex << meta.task_id_hash << std::dec
+                                  << std::endl;
                     }
                 }
             }
@@ -497,6 +623,8 @@ int main(int argc, char** argv)
             std::cout << "[main] TimerMaster table updated: " << slots.size()
                       << " slots, hyperperiod=" << hyperperiod_us << "us"
                       << std::endl;
+            node_client.send_table_applied(table.table_id(), apply_success,
+                                           apply_error);
         });
 
         node_client.connect();
