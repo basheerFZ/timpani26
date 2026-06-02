@@ -5,11 +5,13 @@
 #include <errno.h>
 #include <getopt.h>
 #include <sched.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <cctype>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -34,6 +36,45 @@ volatile sig_atomic_t g_shutdown = 0;
 
 void signal_handler(int /* signum */) { g_shutdown = 1; }
 
+#ifndef SCHED_EXT
+#define SCHED_EXT 7
+#endif
+
+/* Minimal sched_attr layout for sched_setattr(2) */
+struct sched_attr {
+    uint32_t size;
+    uint32_t sched_policy;
+    uint64_t sched_flags;
+    int32_t  sched_nice;
+    uint32_t sched_priority;
+    uint64_t sched_runtime;
+    uint64_t sched_deadline;
+    uint64_t sched_period;
+};
+
+/**
+ * apply_sched_ext() - Set SCHED_EXT policy on a task via pid.
+ *
+ * Called from table_callback after update_task_meta() so that
+ * scx_timpani (SCX_OPS_SWITCH_PARTIAL) takes ownership of the task.
+ * Must be called with scx_timpani already loaded.
+ *
+ * Required: timpani-n runs with CAP_SYS_NICE (setuid or systemd capability).
+ */
+static int apply_sched_ext(pid_t pid)
+{
+    struct sched_attr attr = {};
+    attr.size        = sizeof(attr);
+    attr.sched_policy = SCHED_EXT;
+    if (syscall(SYS_sched_setattr, pid, &attr, 0) < 0) {
+        int saved = errno;
+        std::cerr << "[main] sched_setattr(SCHED_EXT) failed for pid=" << pid
+                  << ": " << strerror(saved) << std::endl;
+        return -1;
+    }
+    return 0;
+}
+
 namespace {
 struct RuntimeOptions {
     std::string orchestrator_host = "127.0.0.1";
@@ -46,17 +87,18 @@ struct RuntimeOptions {
 
 void print_usage(const char* prog)
 {
-    std::cerr
-        << "Usage: " << prog << " [options] [orchestrator_host]\n"
-        << "Options:\n"
-        << "  -p <port>   Orchestrator gRPC port (default: 50060)\n"
-        << "  -n <name>   Node ID override (default: hostname)\n"
-        << "  -l <level>  (compat) log level flag accepted but handled elsewhere\n"
-        << "  -P <prio>   (compat) RT priority flag accepted but handled elsewhere\n"
-        << "  -g          Enable gpdata output (<node>.gpdata)\n"
-        << "  -s          (compat) accepted\n"
-        << "  -V          Show version information\n"
-        << "  -h          Show this help\n";
+    std::cerr << "Usage: " << prog << " [options] [orchestrator_host]\n"
+              << "Options:\n"
+              << "  -p <port>   Orchestrator gRPC port (default: 50060)\n"
+              << "  -n <name>   Node ID override (default: hostname)\n"
+              << "  -l <level>  (compat) log level flag accepted but handled "
+                 "elsewhere\n"
+              << "  -P <prio>   (compat) RT priority flag accepted but handled "
+                 "elsewhere\n"
+              << "  -g          Enable gpdata output (<node>.gpdata)\n"
+              << "  -s          (compat) accepted\n"
+              << "  -V          Show version information\n"
+              << "  -h          Show this help\n";
 }
 
 bool parse_port(const char* text, int& port_out)
@@ -238,7 +280,7 @@ int main(int argc, char** argv)
         timpani::node::FaultMonitor fault_monitor;
         fault_monitor.set_ringbuf_fd(bpf_loader.get_fault_ringbuf_fd());
 
-    #ifdef CONFIG_TRACE_BPF_EVENT
+#ifdef CONFIG_TRACE_BPF_EVENT
         std::unique_ptr<timpani::node::GpdataWriter> gpdata_writer;
         timpani::node::SchedstatMonitor schedstat_monitor;
         std::map<pid_t, std::string> gpdata_pid_to_task;
@@ -256,8 +298,8 @@ int main(int argc, char** argv)
                 gpdata_writer.reset();
             } else if (!schedstat_monitor.start(
                            [&gpdata_writer, &gpdata_pid_to_task,
-                            &gpdata_pid_map_mutex](const schedstat_event&
-                                                       event) {
+                            &gpdata_pid_map_mutex](
+                               const schedstat_event& event) {
                                if (!gpdata_writer) {
                                    return;
                                }
@@ -292,8 +334,8 @@ int main(int argc, char** argv)
 #endif
 
         // Initialize NodeClient (gRPC)
-        timpani::node::NodeClient node_client(
-            orchestrator_endpoint, runtime_options.node_id_override);
+        timpani::node::NodeClient node_client(orchestrator_endpoint,
+                                              runtime_options.node_id_override);
 
         // Connect callbacks
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
@@ -318,18 +360,19 @@ int main(int argc, char** argv)
 
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
-        node_client.set_table_callback([&timer_master, &bpf_loader, &runtime_options
-    #ifdef CONFIG_TRACE_BPF_EVENT
-                        , &schedstat_monitor,
-                        &gpdata_pid_to_task,
-                        &gpdata_pid_map_mutex
-    #endif
-                        ](const auto& table) {
+        node_client.set_table_callback([&timer_master, &bpf_loader,
+                                        &runtime_options
+#ifdef CONFIG_TRACE_BPF_EVENT
+                                        ,
+                                        &schedstat_monitor, &gpdata_pid_to_task,
+                                        &gpdata_pid_map_mutex
+#endif
+        ](const auto& table) {
             std::cout << "[main] Received table: " << table.table_id()
                       << " hyperperiod=" << table.hyperperiod_us() << "us"
                       << " partitions=" << table.partitions_size() << std::endl;
 
-    #ifdef CONFIG_TRACE_BPF_EVENT
+#ifdef CONFIG_TRACE_BPF_EVENT
             if (runtime_options.enable_plot && schedstat_monitor.is_active()) {
                 std::vector<pid_t> stale_pids;
                 {
@@ -350,12 +393,6 @@ int main(int argc, char** argv)
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
             uint32_t slot_idx = 0;
             for (const auto& partition : table.partitions()) {
-                // Build CPU affinity mask from partition cpuset
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                for (uint32_t cpu : partition.cpuset().cpus())
-                    CPU_SET(cpu, &cpuset);
-
                 for (const auto& layer : partition.layers()) {
                     for (const auto& tt_slot : layer.tt_slots()) {
                         // Apply SCHED_FIFO + affinity to matching process
@@ -374,23 +411,27 @@ int main(int argc, char** argv)
                                         gpdata_pid_map_mutex);
                                     gpdata_pid_to_task[pid] = task_id;
                                 } else {
-                                    std::cerr
-                                        << "[main] Failed to register PID for gpdata: "
-                                        << pid << std::endl;
+                                    std::cerr << "[main] Failed to register "
+                                                 "PID for gpdata: "
+                                              << pid << std::endl;
                                 }
                             }
 #endif
 
-                            // Apply CPU affinity to matching process (BPF handles scheduling)
-                            // Register task in BPF task_meta_map so scx_timpani
-                            // can route it to the correct DSQ.
+                            // Apply CPU affinity to matching process (BPF
+                            // handles scheduling) Register task in BPF
+                            // task_meta_map so scx_timpani can route it to the
+                            // correct DSQ.
                             TaskMeta meta = {};
                             meta.workload_id_hash = tt_slot.workload_id_hash();
                             meta.task_id_hash = tt_slot.task_id_hash();
                             meta.scheduling_type = SCHED_TYPE_TT;
                             meta.layer = layer.layer_index();
+                            meta.assigned_cpu =
+                                static_cast<uint32_t>(tt_slot.cpu());
                             meta.activation_ns = 0;
-                            meta.cgroup_id = 0; // TODO: resolve from cgroup path
+                            meta.cgroup_id =
+                                0;  // TODO: resolve from cgroup path
                             if (bpf_loader.update_task_meta(
                                     static_cast<uint32_t>(pid), meta)) {
                                 std::cout << "[main] Registered task in BPF: "
@@ -398,23 +439,26 @@ int main(int argc, char** argv)
                                           << " type=TT hash=0x" << std::hex
                                           << meta.task_id_hash << std::dec
                                           << std::endl;
+                                /* Ensure task is managed by scx_timpani.
+                                 * On timpani-n restart scx unload demotes
+                                 * SCHED_EXT tasks to SCHED_OTHER; re-apply
+                                 * here so select_cpu()/enqueue() fire. */
+                                if (apply_sched_ext(pid) == 0) {
+                                    std::cout << "[main] Applied SCHED_EXT to "
+                                              << task_id << " pid=" << pid
+                                              << std::endl;
+                                }
                             } else {
-                                std::cerr << "[main] Failed to register task in "
-                                             "BPF task_meta_map: "
-                                          << task_id << " pid=" << pid
-                                          << std::endl;
+                                std::cerr
+                                    << "[main] Failed to register task in "
+                                       "BPF task_meta_map: "
+                                    << task_id << " pid=" << pid << std::endl;
                             }
 
-                            if (sched_setaffinity(pid, sizeof(cpuset),
-                                                  &cpuset) == 0)
-                                std::cout << "[main] Applied CPU affinity to "
-                                          << task_id << " pid=" << pid
-                                          << std::endl;
-                            else
-                                std::cerr
-                                    << "[main] sched_setaffinity failed for "
-                                    << task_id << " pid=" << pid
-                                    << " errno=" << errno << std::endl;
+                            /* sched_setaffinity is NOT used with scx_timpani:
+                             * CPU placement is enforced by BPF select_cpu() and
+                             * per-CPU DSQ dispatch. Calling setaffinity on an
+                             * isolated CPU partition returns EINVAL. */
                         }
 
                         // Add TimerMaster slot entry
@@ -425,10 +469,14 @@ int main(int argc, char** argv)
                             static_cast<uint64_t>(tt_slot.offset_us()) *
                             1000ULL;
                         entry.task_id_hash = tt_slot.task_id_hash();
+                        entry.task_name =
+                            tt_slot.task_id(); /* comm name, e.g. "task_1" */
                         slots.push_back(entry);
 
-                        // Populate BPF tt_table_map so dispatch() can consume from DSQ_TT_WAIT
-                        TtSlotKey tt_key = { .cpu = tt_slot.cpu(), .slot_idx = slot_idx };
+                        // Populate BPF tt_table_map so dispatch() can consume
+                        // from DSQ_TT_WAIT
+                        TtSlotKey tt_key = {.cpu = tt_slot.cpu(),
+                                            .slot_idx = slot_idx};
                         TtSlotBpf slot_bpf = {};
                         slot_bpf.workload_id_hash = tt_slot.workload_id_hash();
                         slot_bpf.task_id_hash = tt_slot.task_id_hash();

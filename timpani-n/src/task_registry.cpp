@@ -50,11 +50,6 @@ void TaskRegistry::scan_cgroups() {
                         meta.cgroup_id = cgroup_id;
                         bpf_loader_.update_task_meta(tid, meta);
                         
-                        PartitionInfo pinfo = {};
-                        pinfo.task_id_hash = it->second;
-                        pinfo.cgroup_id = cgroup_id;
-                        bpf_loader_.update_partition(cgroup_id, pinfo);
-                        
                         std::cout << "[TaskRegistry] Registered " << comm_name << " (TID: " << tid << ", CGROUP: " << cgroup_id << ")\n";
                     }
                 }
