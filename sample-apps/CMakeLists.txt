@@ -66,3 +66,5 @@ target_compile_options(sample_apps
 		PUBLIC ${LIBSYSTEMD_CFLAGS_OTHER}
 )
 target_link_libraries(sample_apps PUBLIC m ttsched)
+
+add_executable(cbstask src/cbstask.c)
