@@ -8,6 +8,9 @@
 
 #include "tlog.h"
 #include "schedinfo_service.h"
+#include "orchestrator_service.h"
+
+extern std::unique_ptr<timpani::orchestrator::OrchestratorServiceImpl> g_orchestrator_service;
 
 // ---------------------------------------------------------------------------
 // SchedInfoServiceImpl
@@ -53,6 +56,7 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
         TLOG_DEBUG("  Max Deadline Misses: ", task.max_dmiss());
         TLOG_DEBUG("  Node ID: ", task.node_id());
     }
+
 
     // ── Step 1: Classify workload by TemporalClass (DDR-007 §3.2) ──
     Mechanism mechanism;
@@ -317,4 +321,22 @@ void SchedInfoServer::DumpSchedInfo()
             }
         }
     }
+}
+
+Status SchedInfoServiceImpl::EnforceRecoveryPolicy(ServerContext* context,
+                                                   const schedinfo::v1::RecoveryCommand* request,
+                                                   Response* reply)
+{
+    TLOG_INFO("Received RecoveryCommand: workload '", request->workload_id(),
+              "' policy: ", schedinfo::v1::RecoveryPolicy_Name(request->recovery_policy()));
+
+    if (request->recovery_policy() == schedinfo::v1::RecoveryPolicy::RECOVERY_STOP) {
+        TLOG_INFO("RecoveryPolicy is STOP for workload '", request->workload_id(), "'. Broadcasting RecoverySignal.");
+        if (g_orchestrator_service) {
+            g_orchestrator_service->broadcast_recovery_signal(request->workload_id(), timpani::node::v1::RecoverySignal::ACTION_STOP);
+        }
+    }
+
+    reply->set_status(0);
+    return Status::OK;
 }

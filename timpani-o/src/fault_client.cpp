@@ -44,7 +44,8 @@ bool FaultServiceClient::IsInitialized() const
 bool FaultServiceClient::NotifyFault(const std::string &workload_id,
                                      const std::string &node_id,
                                      const std::string &task_name,
-                                     FaultType fault_type)
+                                     FaultType fault_type,
+                                     uint32_t cumulative_dmiss)
 {
     if (!initialized_) {
         TLOG_ERROR("FaultServiceClient not initialized");
@@ -56,6 +57,7 @@ bool FaultServiceClient::NotifyFault(const std::string &workload_id,
     request.set_node_id(node_id);
     request.set_task_name(task_name);
     request.set_type(fault_type);
+    request.set_cumulative_dmiss(cumulative_dmiss);
 
     Response reply;
     ClientContext context;

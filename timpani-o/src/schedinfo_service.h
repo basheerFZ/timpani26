@@ -35,6 +35,10 @@ class SchedInfoServiceImpl final : public SchedInfoService::Service
     Status AddSchedInfo(ServerContext* context, const SchedInfo* request,
                         Response* reply) override;
 
+    grpc::Status EnforceRecoveryPolicy(grpc::ServerContext* context,
+                                       const schedinfo::v1::RecoveryCommand* request,
+                                       schedinfo::v1::Response* reply) override;
+
     /**
      * @brief Get all schedule tables (workload_id → node_id → table).
      * @param changed  If non-null, set to true if tables changed since last call.
