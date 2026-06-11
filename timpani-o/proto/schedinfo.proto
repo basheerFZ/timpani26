@@ -63,6 +63,13 @@ message TaskInfo {
   int32 max_dmiss = 10;
 }
 
+enum RecoveryPolicy {
+  RECOVERY_UNKNOWN = 0;
+  RECOVERY_STOP = 1;
+  RECOVERY_RESTART = 2;
+  RECOVERY_TERMINATE = 3;
+}
+
 message SchedInfo {
   string workload_id = 1;
   repeated TaskInfo tasks = 2;
@@ -70,6 +77,7 @@ message SchedInfo {
   // All tasks in a SchedInfo share the same scheduling level.
   // Default (0 = TEMPORAL_PERIODIC) → L1 TT for backward compatibility.
   TemporalClass temporal_class = 3;
+  RecoveryPolicy recovery_policy = 4;
 }
 
 enum FaultType {
@@ -84,4 +92,5 @@ message FaultInfo {
   string node_id = 2;
   string task_name = 3;
   FaultType type = 4;
+  uint32 cumulative_dmiss = 5;
 }
