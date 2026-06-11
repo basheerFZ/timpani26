@@ -6,13 +6,15 @@
 #include "bpf/maps.h"
 #include <functional>
 #include <thread>
+#include <map>
+#include <mutex>
 
 namespace timpani {
 namespace node {
 
 class FaultMonitor {
 public:
-    using FaultCallback = std::function<void(const FaultEvent&)>;
+    using FaultCallback = std::function<void(const FaultEvent&, uint32_t dmiss_count)>;
 
     FaultMonitor();
     ~FaultMonitor();
@@ -30,6 +32,8 @@ private:
     bool running_;
     int ringbuf_fd_;
     std::thread poll_thread_;
+    std::map<uint64_t, uint32_t> task_dmiss_counts_;
+    std::mutex dmiss_mutex_;
 };
 
 } // namespace node

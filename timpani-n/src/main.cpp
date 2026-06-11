@@ -352,12 +352,29 @@ int main(int argc, char** argv)
             // Handle shutdown
         });
 
-        fault_monitor.set_callback([&node_client](const auto& event) {
+/*
+        node_client.set_recovery_callback([&timer_master](const auto& recovery_signal) {
+            std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
+                      << " action: " << recovery_signal.action() << std::endl;
+            if (recovery_signal.action() == timpani::node::v1::RecoverySignal::ACTION_STOP) {
+                std::cout << "[main] Stopping workload " << recovery_signal.workload_id() << std::endl;
+                // Currently timer_master might not have an interface to clear a specific workload easily, 
+                // but we can log the action as requested.
+                // Depending on the BPF structures we could clear the TT maps.
+            }
+        });
+*/
+
+        fault_monitor.set_callback([&node_client](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
-            fault.set_fault_type(
-                static_cast<timpani::node::v1::FaultType>(event.fault_type));
+            if (event.fault_type == FAULT_DMISS) {
+                fault.set_fault_type(timpani::node::v1::FaultType::DMISS);
+            } else {
+                fault.set_fault_type(static_cast<timpani::node::v1::FaultType>(event.fault_type));
+            }
+            fault.set_dmiss_count(current_dmiss);
             node_client.send_fault(fault);
         });
 

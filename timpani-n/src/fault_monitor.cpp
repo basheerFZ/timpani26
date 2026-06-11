@@ -49,8 +49,15 @@ void FaultMonitor::poll_loop() {
 int FaultMonitor::ring_buf_callback(void* ctx, void* data, size_t len) {
     auto* self = static_cast<FaultMonitor*>(ctx);
     auto* event = static_cast<const FaultEvent*>(data);
+    uint32_t current_dmiss = 0;
+    if (event->fault_type == FAULT_DMISS) {
+        std::lock_guard<std::mutex> lock(self->dmiss_mutex_);
+        self->task_dmiss_counts_[event->task_id_hash]++;
+        current_dmiss = self->task_dmiss_counts_[event->task_id_hash];
+    }
+
     if (self->callback_) {
-        self->callback_(*event);
+        self->callback_(*event, current_dmiss);
     }
     return 0;
 }
