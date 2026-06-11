@@ -25,6 +25,7 @@ class NodeClient
     using UpdateCallback =
         std::function<void(const timpani::node::v1::ScheduleTableUpdate&)>;
     using ShutdownCallback = std::function<void(uint32_t grace_period_ms)>;
+    using RecoveryCallback = std::function<void(const timpani::node::v1::RecoverySignal&)>;
 
     explicit NodeClient(const std::string& server_address,
               const std::string& node_id_override = "");
@@ -33,6 +34,7 @@ class NodeClient
     void set_table_callback(TableCallback cb);
     void set_update_callback(UpdateCallback cb);
     void set_shutdown_callback(ShutdownCallback cb);
+    void set_recovery_callback(RecoveryCallback cb);
 
     void connect();
     void disconnect();
@@ -63,6 +65,7 @@ class NodeClient
     TableCallback table_callback_;
     UpdateCallback update_callback_;
     ShutdownCallback shutdown_callback_;
+    RecoveryCallback recovery_callback_;
 
     std::mutex write_mutex_;
 };

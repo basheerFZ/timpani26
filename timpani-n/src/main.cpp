@@ -345,6 +345,9 @@ int main(int argc, char** argv)
         timpani::node::NodeClient node_client(orchestrator_endpoint,
                                               runtime_options.node_id_override);
 
+        // 5. Initialize Timer Master (RT Priority Thread)
+        timpani::node::TimerMaster timer_master(bpf_loader);
+
         // Connect callbacks
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
             std::cout << "[main] Received shutdown command: " << grace_period_ms
@@ -352,7 +355,6 @@ int main(int argc, char** argv)
             // Handle shutdown
         });
 
-/*
         node_client.set_recovery_callback([&timer_master](const auto& recovery_signal) {
             std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
                       << " action: " << recovery_signal.action() << std::endl;
@@ -363,7 +365,6 @@ int main(int argc, char** argv)
                 // Depending on the BPF structures we could clear the TT maps.
             }
         });
-*/
 
         fault_monitor.set_callback([&node_client](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
@@ -379,9 +380,6 @@ int main(int argc, char** argv)
         });
 
         fault_monitor.start();
-
-        // 5. Initialize Timer Master (RT Priority Thread) last
-        timpani::node::TimerMaster timer_master(bpf_loader);
 
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
@@ -644,8 +642,8 @@ int main(int argc, char** argv)
                                            apply_error);
         });
 
-        node_client.connect();
         timer_master.start();
+        node_client.connect();
 
         // Daemon simply waits for shutdown signal
         while (!g_shutdown) {
