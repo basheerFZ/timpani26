@@ -57,6 +57,7 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
         TLOG_DEBUG("  Node ID: ", task.node_id());
     }
 
+    // Schedule table generation logic remains below...
 
     // ── Step 1: Classify workload by TemporalClass (DDR-007 §3.2) ──
     Mechanism mechanism;
@@ -332,8 +333,39 @@ Status SchedInfoServiceImpl::EnforceRecoveryPolicy(ServerContext* context,
 
     if (request->recovery_policy() == schedinfo::v1::RecoveryPolicy::RECOVERY_STOP) {
         TLOG_INFO("RecoveryPolicy is STOP for workload '", request->workload_id(), "'. Broadcasting RecoverySignal.");
+
+        {
+            std::unique_lock<std::shared_mutex> lock(schedule_mutex_);
+            auto existing_it = workload_tasks_.find(request->workload_id());
+            if (existing_it != workload_tasks_.end()) {
+                workload_tasks_.erase(existing_it);
+                
+                std::string error_detail;
+                if (!RegenerateAllSchedules(error_detail)) {
+                    TLOG_ERROR("Failed to regenerate schedules after removing workload '", request->workload_id(), "': ", error_detail);
+                } else {
+                    schedule_changed_ = true;
+                    TLOG_INFO("Removed workload '", request->workload_id(), "' from local schedule state due to STOP policy.");
+                }
+            } else {
+                TLOG_WARN("STOP policy received for unknown workload '", request->workload_id(), "'.");
+            }
+        }
+
+        bool broadcast_ok = false;
         if (g_orchestrator_service) {
-            g_orchestrator_service->broadcast_recovery_signal(request->workload_id(), timpani::node::v1::RecoverySignal::ACTION_STOP);
+            broadcast_ok = g_orchestrator_service->broadcast_recovery_signal(
+                request->workload_id(),
+                timpani::node::v1::RecoverySignal::ACTION_STOP);
+        } else {
+            TLOG_ERROR("OrchestratorService is not initialized. Cannot broadcast STOP RecoverySignal.");
+        }
+
+        if (!broadcast_ok) {
+            TLOG_WARN("Broadcast RecoverySignal(ACTION_STOP) reported failure for workload '",
+                      request->workload_id(), "'.");
+            reply->set_status(-1);
+            return Status::OK;
         }
     }
 

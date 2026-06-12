@@ -82,13 +82,19 @@ void OrchestratorServiceImpl::handle_fault_info(const FaultInfo& fault, Connecte
             break;
     }
 
-    FaultServiceClient::GetInstance().NotifyFault(
+    bool forwarded = FaultServiceClient::GetInstance().NotifyFault(
         workload_id,
         node.node_id,
         task_id,
         proto_fault_type,
         fault.dmiss_count()
     );
+
+    if (!forwarded) {
+        std::cerr << "[Orchestrator] Fault forwarding failed (queued for retry if enabled): "
+                  << "workload=" << workload_id << " task=" << task_id
+                  << std::endl;
+    }
 }
 
 void OrchestratorServiceImpl::handle_table_applied(const TableApplied& applied, ConnectedNode& node) {

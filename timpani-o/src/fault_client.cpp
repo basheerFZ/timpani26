@@ -47,6 +47,8 @@ bool FaultServiceClient::NotifyFault(const std::string &workload_id,
                                      FaultType fault_type,
                                      uint32_t cumulative_dmiss)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     if (!initialized_) {
         TLOG_ERROR("FaultServiceClient not initialized");
         return false;
@@ -59,12 +61,27 @@ bool FaultServiceClient::NotifyFault(const std::string &workload_id,
     request.set_type(fault_type);
     request.set_cumulative_dmiss(cumulative_dmiss);
 
+    if (!FlushRetryQueueLocked()) {
+        TLOG_WARN("Retry queue flush failed. New fault will be queued on send failure.");
+    }
+
+    if (!SendFaultRpc(request)) {
+        EnqueueRetryLocked(request);
+        TLOG_WARN("Fault queued for retry. queue_size=", retry_queue_.size());
+        return false;
+    }
+
+    return true;
+}
+
+bool FaultServiceClient::SendFaultRpc(const FaultInfo& request)
+{
     Response reply;
     ClientContext context;
 
-    TLOG_INFO("Notifying Pullpiri - Workload: ", workload_id,
-              ", Node: ", node_id, ", Task: ", task_name,
-              ", Fault Type: ", FaultTypeToStr(fault_type));
+    TLOG_INFO("Notifying Pullpiri - Workload: ", request.workload_id(),
+              ", Node: ", request.node_id(), ", Task: ", request.task_name(),
+              ", Fault Type: ", FaultTypeToStr(request.type()));
 
     Status status = stub_->NotifyFault(&context, request, &reply);
 
@@ -80,6 +97,29 @@ bool FaultServiceClient::NotifyFault(const std::string &workload_id,
     }
 
     return true;
+}
+
+bool FaultServiceClient::FlushRetryQueueLocked()
+{
+    while (!retry_queue_.empty()) {
+        const FaultInfo& pending = retry_queue_.front();
+        if (!SendFaultRpc(pending)) {
+            return false;
+        }
+        retry_queue_.pop_front();
+    }
+
+    return true;
+}
+
+void FaultServiceClient::EnqueueRetryLocked(const FaultInfo& request)
+{
+    if (retry_queue_.size() >= kMaxRetryQueue) {
+        retry_queue_.pop_front();
+        TLOG_WARN("Retry queue full. Dropping oldest fault event.");
+    }
+
+    retry_queue_.push_back(request);
 }
 
 FaultServiceClient::FaultServiceClient()
