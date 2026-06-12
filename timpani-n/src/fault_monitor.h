@@ -4,10 +4,11 @@
 #pragma once
 
 #include "bpf/maps.h"
+#include <cstdint>
 #include <functional>
-#include <thread>
 #include <map>
 #include <mutex>
+#include <thread>
 
 namespace timpani {
 namespace node {
@@ -32,7 +33,7 @@ private:
     bool running_;
     int ringbuf_fd_;
     std::thread poll_thread_;
-    std::map<uint64_t, uint32_t> task_dmiss_counts_;
+    std::map<std::pair<uint64_t, uint64_t>, uint32_t> task_dmiss_counts_;
     std::mutex dmiss_mutex_;
 };
 

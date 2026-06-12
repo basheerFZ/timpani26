@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -65,6 +66,7 @@ class TimerMaster
     std::vector<SlotEntry> slot_table_;
     uint64_t hyperperiod_ns_;
     uint64_t epoch_ns_;
+    std::mutex schedule_mutex_;
 };
 
 }  // namespace node

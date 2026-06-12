@@ -11,6 +11,7 @@
 
 #include <cctype>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -187,6 +188,18 @@ uint64_t monotonic_now_ns()
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
+}
+
+timpani::node::v1::FaultType to_proto_fault_type(uint8_t bpf_fault_type)
+{
+    switch (bpf_fault_type) {
+        case FAULT_DMISS:
+            return timpani::node::v1::FaultType::DMISS;
+        case FAULT_BUDGET_EXCEED:
+            return timpani::node::v1::FaultType::BUDGET_EXCEED;
+        default:
+            return timpani::node::v1::FaultType::UNKNOWN;
+    }
 }
 }  // namespace
 
@@ -382,6 +395,7 @@ int main(int argc, char** argv)
                         bpf_loader.delete_task_meta(pid);
                         std::cout << "[main] Evicted PID " << pid << " from Time-Triggered / CBS Execution Domain." << std::endl;
                     }
+                    workload_to_pids.erase(pids_it);
                 }
 
                 auto slots_it = workload_to_slots.find(wid);
@@ -390,11 +404,13 @@ int main(int argc, char** argv)
                         bpf_loader.delete_tt_slot(key);
                         std::cout << "[main] Deleted TT slot [cpu=" << key.cpu << " idx=" << key.slot_idx << "] from BPF." << std::endl;
                     }
+                    workload_to_slots.erase(slots_it);
                 }
 
                 auto hash_it = workload_to_hash.find(wid);
                 if (hash_it != workload_to_hash.end()) {
                     timer_master.remove_workload(hash_it->second);
+                    workload_to_hash.erase(hash_it);
                 }
             }
         });
@@ -403,11 +419,7 @@ int main(int argc, char** argv)
             timpani::node::v1::FaultInfo fault;
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
-            if (event.fault_type == FAULT_DMISS) {
-                fault.set_fault_type(timpani::node::v1::FaultType::DMISS);
-            } else {
-                fault.set_fault_type(static_cast<timpani::node::v1::FaultType>(event.fault_type));
-            }
+            fault.set_fault_type(to_proto_fault_type(event.fault_type));
             fault.set_dmiss_count(current_dmiss);
             node_client.send_fault(fault);
         });

@@ -4,6 +4,7 @@
 #include "fault_monitor.h"
 #include <iostream>
 #include <bpf/libbpf.h>
+#include <utility>
 
 namespace timpani {
 namespace node {
@@ -52,8 +53,9 @@ int FaultMonitor::ring_buf_callback(void* ctx, void* data, size_t len) {
     uint32_t current_dmiss = 0;
     if (event->fault_type == FAULT_DMISS) {
         std::lock_guard<std::mutex> lock(self->dmiss_mutex_);
-        self->task_dmiss_counts_[event->task_id_hash]++;
-        current_dmiss = self->task_dmiss_counts_[event->task_id_hash];
+        auto key = std::make_pair(event->workload_id_hash, event->task_id_hash);
+        self->task_dmiss_counts_[key]++;
+        current_dmiss = self->task_dmiss_counts_[key];
     }
 
     if (self->callback_) {

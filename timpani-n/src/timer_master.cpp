@@ -83,6 +83,7 @@ TimerMaster::~TimerMaster()
 void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
                                      uint64_t hyperperiod_us, uint64_t epoch_ns)
 {
+    std::lock_guard<std::mutex> lock(schedule_mutex_);
     slot_table_ = slots;
     hyperperiod_ns_ = hyperperiod_us * 1000ULL;
     epoch_ns_ = epoch_ns;
@@ -176,6 +177,7 @@ uint64_t TimerMaster::compute_next_tt_start_ns(
 
 void TimerMaster::remove_workload(uint64_t workload_id_hash)
 {
+    std::lock_guard<std::mutex> lock(schedule_mutex_);
     auto it = std::remove_if(slot_table_.begin(), slot_table_.end(),
                              [workload_id_hash](const SlotEntry& entry) {
                                  return entry.workload_id_hash == workload_id_hash;
@@ -202,7 +204,17 @@ void TimerMaster::thread_loop()
     while (running_) {
         table_pending_ = false;
 
-        if (slot_table_.empty() || hyperperiod_ns_ == 0) {
+        std::vector<SlotEntry> active_slots;
+        uint64_t active_hyperperiod_ns = 0;
+        uint64_t active_epoch_ns = 0;
+        {
+            std::lock_guard<std::mutex> lock(schedule_mutex_);
+            active_slots = slot_table_;
+            active_hyperperiod_ns = hyperperiod_ns_;
+            active_epoch_ns = epoch_ns_;
+        }
+
+        if (active_slots.empty() || active_hyperperiod_ns == 0) {
             // No table yet — idle loop, wakes every 1ms to check for new table
             struct timespec next_ts;
             clock_gettime(CLOCK_REALTIME, &next_ts);
@@ -219,8 +231,8 @@ void TimerMaster::thread_loop()
         }
 
         size_t next_slot_idx = 0;
-        uint64_t current_hyperperiod_start = epoch_ns_;
-        if (epoch_ns_ == 0) {
+        uint64_t current_hyperperiod_start = active_epoch_ns;
+        if (active_epoch_ns == 0) {
             struct timespec now;
             clock_gettime(CLOCK_REALTIME, &now);
             current_hyperperiod_start =
@@ -231,7 +243,7 @@ void TimerMaster::thread_loop()
                   << std::endl;
 
         while (running_ && !table_pending_) {
-            const auto& slot = slot_table_[next_slot_idx];
+            const auto& slot = active_slots[next_slot_idx];
             uint64_t target_ns = current_hyperperiod_start + slot.offset_ns;
 
             struct timespec next_ts;
@@ -310,9 +322,9 @@ void TimerMaster::thread_loop()
             wake_task(slot.task_id_hash);
 
             next_slot_idx++;
-            if (next_slot_idx >= slot_table_.size()) {
+            if (next_slot_idx >= active_slots.size()) {
                 next_slot_idx = 0;
-                current_hyperperiod_start += hyperperiod_ns_;
+                current_hyperperiod_start += active_hyperperiod_ns;
             }
         }  // end slot loop
     }  // end outer loop
