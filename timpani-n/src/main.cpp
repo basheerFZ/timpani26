@@ -345,8 +345,14 @@ int main(int argc, char** argv)
         timpani::node::NodeClient node_client(orchestrator_endpoint,
                                               runtime_options.node_id_override);
 
-        // 5. Initialize Timer Master (RT Priority Thread)
+        // 5. Initialize Timer Master (Time-Triggered / CBS Execution Thread)
         timpani::node::TimerMaster timer_master(bpf_loader);
+
+        // Workload tracking for Recovery Eviction
+        std::map<std::string, std::vector<pid_t>> workload_to_pids;
+        std::map<std::string, std::vector<TtSlotKey>> workload_to_slots;
+        std::map<std::string, uint64_t> workload_to_hash;
+        std::mutex workload_map_mutex;
 
         // Connect callbacks
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
@@ -355,14 +361,41 @@ int main(int argc, char** argv)
             // Handle shutdown
         });
 
-        node_client.set_recovery_callback([&timer_master](const auto& recovery_signal) {
+        node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex](const auto& recovery_signal) {
             std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
                       << " action: " << recovery_signal.action() << std::endl;
             if (recovery_signal.action() == timpani::node::v1::RecoverySignal::ACTION_STOP) {
-                std::cout << "[main] Stopping workload " << recovery_signal.workload_id() << std::endl;
-                // Currently timer_master might not have an interface to clear a specific workload easily, 
-                // but we can log the action as requested.
-                // Depending on the BPF structures we could clear the TT maps.
+                std::cout << "[main] Evicting workload " << recovery_signal.workload_id() << std::endl;
+                
+                std::lock_guard<std::mutex> lock(workload_map_mutex);
+                const std::string& wid = recovery_signal.workload_id();
+
+                auto pids_it = workload_to_pids.find(wid);
+                if (pids_it != workload_to_pids.end()) {
+                    cpu_set_t full_mask;
+                    CPU_ZERO(&full_mask);
+                    for (int i = 0; i < CPU_SETSIZE; ++i) {
+                        CPU_SET(i, &full_mask);
+                    }
+                    for (pid_t pid : pids_it->second) {
+                        sched_setaffinity(pid, sizeof(full_mask), &full_mask);
+                        bpf_loader.delete_task_meta(pid);
+                        std::cout << "[main] Evicted PID " << pid << " from Time-Triggered / CBS Execution Domain." << std::endl;
+                    }
+                }
+
+                auto slots_it = workload_to_slots.find(wid);
+                if (slots_it != workload_to_slots.end()) {
+                    for (const auto& key : slots_it->second) {
+                        bpf_loader.delete_tt_slot(key);
+                        std::cout << "[main] Deleted TT slot [cpu=" << key.cpu << " idx=" << key.slot_idx << "] from BPF." << std::endl;
+                    }
+                }
+
+                auto hash_it = workload_to_hash.find(wid);
+                if (hash_it != workload_to_hash.end()) {
+                    timer_master.remove_workload(hash_it->second);
+                }
             }
         });
 
@@ -384,8 +417,9 @@ int main(int argc, char** argv)
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
         node_client.set_table_callback([&timer_master, &bpf_loader,
-                        &node_client,
-                                        &runtime_options
+                                        &node_client,
+                                        &runtime_options,
+                                        &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex
 #ifdef CONFIG_TRACE_BPF_EVENT
                                         ,
                                         &schedstat_monitor, &gpdata_pid_to_task,
@@ -395,6 +429,13 @@ int main(int argc, char** argv)
             std::cout << "[main] Received table: " << table.table_id()
                       << " hyperperiod=" << table.hyperperiod_us() << "us"
                       << " partitions=" << table.partitions_size() << std::endl;
+
+            {
+                std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                workload_to_pids.clear();
+                workload_to_slots.clear();
+                workload_to_hash.clear();
+            }
 
 #ifdef CONFIG_TRACE_BPF_EVENT
             if (runtime_options.enable_plot && schedstat_monitor.is_active()) {
@@ -520,6 +561,7 @@ int main(int argc, char** argv)
                         entry.task_id_hash = tt_slot.task_id_hash();
                         entry.task_name =
                             tt_slot.task_id(); /* comm name, e.g. "task_1" */
+                        entry.workload_id_hash = tt_slot.workload_id_hash();
                         slots.push_back(entry);
 
                         // Populate BPF tt_table_map so dispatch() can consume
@@ -536,6 +578,14 @@ int main(int argc, char** argv)
                         if (!bpf_loader.update_tt_slot(tt_key, slot_bpf)) {
                             record_apply_error("TT slot update failed: " +
                                                tt_slot.task_id());
+                        }
+
+                        // Update workload tracking maps
+                        if (pid >= 0) {
+                            std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                            workload_to_pids[tt_slot.workload_id()].push_back(pid);
+                            workload_to_slots[tt_slot.workload_id()].push_back(tt_key);
+                            workload_to_hash[tt_slot.workload_id()] = tt_slot.workload_id_hash();
                         }
 
                         slot_idx++;
