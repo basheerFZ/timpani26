@@ -174,6 +174,21 @@ uint64_t TimerMaster::compute_next_tt_start_ns(
            slot_table_[current_slot_idx].offset_ns;
 }
 
+void TimerMaster::remove_workload(uint64_t workload_id_hash)
+{
+    auto it = std::remove_if(slot_table_.begin(), slot_table_.end(),
+                             [workload_id_hash](const SlotEntry& entry) {
+                                 return entry.workload_id_hash == workload_id_hash;
+                             });
+    if (it != slot_table_.end()) {
+        slot_table_.erase(it, slot_table_.end());
+        table_pending_ = true;
+        std::cout << "[TimerMaster] Removed slots for workload hash: 0x" 
+                  << std::hex << workload_id_hash << std::dec << std::endl;
+    }
+}
+}
+
 void TimerMaster::thread_loop()
 {
     struct sched_param param = {};

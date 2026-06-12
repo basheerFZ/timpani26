@@ -29,6 +29,7 @@ class TimerMaster
         uint64_t    offset_ns;
         uint64_t    duration_ns;
         uint64_t    task_id_hash;
+        uint64_t    workload_id_hash;
         std::string task_name;   /* task comm name — used for targeted wake */
     };
 
@@ -40,6 +41,8 @@ class TimerMaster
 
     void start();
     void stop();
+
+    void remove_workload(uint64_t workload_id_hash);
 
   private:
     void thread_loop();

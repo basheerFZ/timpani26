@@ -22,6 +22,8 @@ public:
     bool update_tt_slot(const TtSlotKey& key, const TtSlotBpf& slot);
     bool update_cbs_state(uint64_t hash, const CbsState& state);
     bool update_task_meta(uint32_t pid, const TaskMeta& meta);
+    bool delete_task_meta(uint32_t pid);
+    bool delete_tt_slot(const TtSlotKey& key);
     bool update_current_slot(uint32_t cpu, uint32_t slot_idx);
     bool update_next_tt_start(uint32_t cpu, uint64_t next_start_ns);
 
