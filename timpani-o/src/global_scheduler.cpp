@@ -337,6 +337,7 @@ bool GlobalScheduler::place_tt_slots(
             slot.offset_us   = static_cast<uint32_t>(offset);
             slot.duration_us = task.wcet_us;
             slot.deadline_us = task.deadline_us;
+            slot.max_dmiss   = task.max_dmiss;
             slot.cpu         = cpu;
 
             schedule.tt_slots.push_back(slot);
@@ -461,6 +462,7 @@ bool GlobalScheduler::allocate_cbs_budgets(
         alloc.budget_us   = task.wcet_us;      // Cs = WCET
         alloc.period_us   = task.period_us;     // Ts = MIT
         alloc.deadline_us = task.deadline_us;
+        alloc.max_dmiss   = task.max_dmiss;
         alloc.cpu         = cpu;
 
         schedule.cbs_allocations.push_back(alloc);
@@ -525,6 +527,7 @@ timpani::node::v1::HierarchicalScheduleTable GlobalScheduler::build_table(
             tt->set_duration_us(slot.duration_us);
             tt->set_deadline_us(slot.deadline_us);
             tt->set_cpu(static_cast<uint32_t>(slot.cpu));
+            tt->set_current_limit(slot.max_dmiss);
             tt->set_workload_id_hash(fnv1a_hash(slot.workload_id.c_str()));
             tt->set_task_id_hash(fnv1a_hash(slot.task_id.c_str()));
             ++total_tt;
@@ -538,6 +541,7 @@ timpani::node::v1::HierarchicalScheduleTable GlobalScheduler::build_table(
             cbs->set_budget_us(alloc.budget_us);
             cbs->set_period_us(alloc.period_us);
             cbs->set_deadline_us(alloc.deadline_us);
+            cbs->set_current_limit(alloc.max_dmiss);
             cbs->set_workload_id_hash(fnv1a_hash(alloc.workload_id.c_str()));
             cbs->set_task_id_hash(fnv1a_hash(alloc.task_id.c_str()));
             ++total_cbs;

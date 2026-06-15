@@ -60,7 +60,9 @@ void OrchestratorServiceImpl::handle_node_status(const NodeStatus& status, Conne
 
 void OrchestratorServiceImpl::handle_fault_info(const FaultInfo& fault, ConnectedNode& node) {
     std::cerr << "[Orchestrator] Fault from " << node.node_id 
-              << " task=" << fault.task_id() << " type=" << fault.fault_type() << std::endl;
+              << " task=" << fault.task_id() << " type=" << fault.fault_type()
+              << " dmiss_count=" << fault.dmiss_count()
+              << " current_limit=" << fault.current_limit() << std::endl;
 
     std::string workload_id = fault.workload_id();
     if (workload_id.empty()) {
@@ -80,6 +82,13 @@ void OrchestratorServiceImpl::handle_fault_info(const FaultInfo& fault, Connecte
         default:
             proto_fault_type = schedinfo::v1::FaultType::UNKNOWN;
             break;
+    }
+
+    if (fault.current_limit() > 0 && fault.dmiss_count() >= fault.current_limit()) {
+        std::cerr << "[Orchestrator] DMISS limit reached: workload=" << workload_id
+                  << " task=" << task_id
+                  << " dmiss_count=" << fault.dmiss_count()
+                  << " current_limit=" << fault.current_limit() << std::endl;
     }
 
     bool forwarded = FaultServiceClient::GetInstance().NotifyFault(

@@ -196,6 +196,7 @@ std::vector<ClassifiedTask> SchedInfoServiceImpl::ConvertToClassifiedTasks(
         ct.wcet_us     = static_cast<uint32_t>(grpc_task.runtime());
         ct.deadline_us = static_cast<uint32_t>(grpc_task.deadline());
         ct.assigned_cpu = -1;
+        ct.max_dmiss    = static_cast<uint32_t>(grpc_task.max_dmiss());
 
         // Use period as deadline if deadline is not set
         if (ct.deadline_us == 0 && ct.period_us > 0) {

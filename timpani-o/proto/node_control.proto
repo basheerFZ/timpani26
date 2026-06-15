@@ -152,6 +152,7 @@ message TtSlot {
   uint32 cpu = 6;
   uint64 workload_id_hash = 7;
   uint64 task_id_hash = 8;
+  uint32 current_limit = 9;
 }
 
 message CbsConfig {
@@ -162,4 +163,5 @@ message CbsConfig {
   uint32 deadline_us = 5;
   uint64 workload_id_hash = 6;
   uint64 task_id_hash = 7;
+  uint32 current_limit = 8;
 }

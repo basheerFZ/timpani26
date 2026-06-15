@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "bpf_loader.h"
@@ -366,6 +367,8 @@ int main(int argc, char** argv)
         std::map<std::string, std::vector<TtSlotKey>> workload_to_slots;
         std::map<std::string, uint64_t> workload_to_hash;
         std::mutex workload_map_mutex;
+        std::map<std::pair<uint64_t, uint64_t>, uint32_t> task_current_limits;
+        std::mutex task_limit_mutex;
 
         // Connect callbacks
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
@@ -374,7 +377,8 @@ int main(int argc, char** argv)
             // Handle shutdown
         });
 
-        node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex](const auto& recovery_signal) {
+        node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
+                                           &task_current_limits, &task_limit_mutex](const auto& recovery_signal) {
             std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
                       << " action: " << recovery_signal.action() << std::endl;
             if (recovery_signal.action() == timpani::node::v1::RecoverySignal::ACTION_STOP) {
@@ -409,18 +413,46 @@ int main(int argc, char** argv)
 
                 auto hash_it = workload_to_hash.find(wid);
                 if (hash_it != workload_to_hash.end()) {
+                    {
+                        std::lock_guard<std::mutex> limit_lock(task_limit_mutex);
+                        for (auto it = task_current_limits.begin(); it != task_current_limits.end();) {
+                            if (it->first.first == hash_it->second) {
+                                it = task_current_limits.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
                     timer_master.remove_workload(hash_it->second);
                     workload_to_hash.erase(hash_it);
                 }
             }
         });
 
-        fault_monitor.set_callback([&node_client](const auto& event, uint32_t current_dmiss) {
+        fault_monitor.set_callback([&node_client, &task_current_limits, &task_limit_mutex](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
             fault.set_fault_type(to_proto_fault_type(event.fault_type));
             fault.set_dmiss_count(current_dmiss);
+
+            uint32_t current_limit = 0;
+            {
+                std::lock_guard<std::mutex> lock(task_limit_mutex);
+                const auto limit_key = std::make_pair(event.workload_id_hash,
+                                                      event.task_id_hash);
+                auto it = task_current_limits.find(limit_key);
+                if (it != task_current_limits.end()) {
+                    current_limit = it->second;
+                }
+            }
+            fault.set_current_limit(current_limit);
+
+            std::cout << "[main] Fault threshold exceeded! Forwarding fault to Timpani-O. "
+                      << "workload_hash=0x" << std::hex << event.workload_id_hash
+                      << " task_hash=0x" << event.task_id_hash << std::dec
+                      << " dmiss_count=" << current_dmiss << std::endl;
+
             node_client.send_fault(fault);
         });
 
@@ -431,7 +463,8 @@ int main(int argc, char** argv)
         node_client.set_table_callback([&timer_master, &bpf_loader,
                                         &node_client,
                                         &runtime_options,
-                                        &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex
+                                        &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
+                                        &task_current_limits, &task_limit_mutex
 #ifdef CONFIG_TRACE_BPF_EVENT
                                         ,
                                         &schedstat_monitor, &gpdata_pid_to_task,
@@ -447,6 +480,10 @@ int main(int argc, char** argv)
                 workload_to_pids.clear();
                 workload_to_slots.clear();
                 workload_to_hash.clear();
+            }
+            {
+                std::lock_guard<std::mutex> limit_lock(task_limit_mutex);
+                task_current_limits.clear();
             }
 
 #ifdef CONFIG_TRACE_BPF_EVENT
@@ -600,6 +637,14 @@ int main(int argc, char** argv)
                             workload_to_hash[tt_slot.workload_id()] = tt_slot.workload_id_hash();
                         }
 
+                        {
+                            std::lock_guard<std::mutex> limit_lock(task_limit_mutex);
+                            const auto limit_key = std::make_pair(
+                                tt_slot.workload_id_hash(),
+                                tt_slot.task_id_hash());
+                            task_current_limits[limit_key] = tt_slot.current_limit();
+                        }
+
                         slot_idx++;
                     }
 
@@ -690,6 +735,13 @@ int main(int argc, char** argv)
                                   << cbs_state.period_us << "us hash=0x"
                                   << std::hex << meta.task_id_hash << std::dec
                                   << std::endl;
+                        // Collect current_limit for FaultMonitor threshold
+                        if (cbs_entry.current_limit() > 0) {
+                            const auto limit_key = std::make_pair(
+                                cbs_entry.workload_id_hash(),
+                                cbs_entry.task_id_hash());
+                            new_limits[limit_key] = cbs_entry.current_limit();
+                        }
                     }
                 }
             }
