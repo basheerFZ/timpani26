@@ -217,8 +217,10 @@ static __always_inline void promote_throttled_if_replenished(__u64 now)
             continue;
 
         cbs_lazy_replenish(cbs, now);
-        if (cbs->remaining_us > 0)
+        if (cbs->remaining_us > 0) {
             scx_bpf_dispatch_from_dsq(&it, p, DSQ_CBS, 0);
+            scx_bpf_kick_cpu(meta->assigned_cpu, SCX_KICK_IDLE);
+        }
     }
     bpf_iter_scx_dsq_destroy(&it);
 }
