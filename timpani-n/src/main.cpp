@@ -367,8 +367,6 @@ int main(int argc, char** argv)
         std::map<std::string, std::vector<TtSlotKey>> workload_to_slots;
         std::map<std::string, uint64_t> workload_to_hash;
         std::mutex workload_map_mutex;
-        std::map<std::pair<uint64_t, uint64_t>, uint32_t> task_current_limits;
-        std::mutex task_limit_mutex;
 
         // Connect callbacks
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
@@ -378,7 +376,7 @@ int main(int argc, char** argv)
         });
 
         node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
-                                           &task_current_limits, &task_limit_mutex](const auto& recovery_signal) {
+                                           &fault_monitor](const auto& recovery_signal) {
             std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
                       << " action: " << recovery_signal.action() << std::endl;
             if (recovery_signal.action() == timpani::node::v1::RecoverySignal::ACTION_STOP) {
@@ -413,40 +411,23 @@ int main(int argc, char** argv)
 
                 auto hash_it = workload_to_hash.find(wid);
                 if (hash_it != workload_to_hash.end()) {
-                    {
-                        std::lock_guard<std::mutex> limit_lock(task_limit_mutex);
-                        for (auto it = task_current_limits.begin(); it != task_current_limits.end();) {
-                            if (it->first.first == hash_it->second) {
-                                it = task_current_limits.erase(it);
-                            } else {
-                                ++it;
-                            }
-                        }
-                    }
                     timer_master.remove_workload(hash_it->second);
                     workload_to_hash.erase(hash_it);
                 }
             }
         });
 
-        fault_monitor.set_callback([&node_client, &task_current_limits, &task_limit_mutex](const auto& event, uint32_t current_dmiss) {
+        // Fault callback: invoked only when a task's cumulative dmiss exceeds
+        // its current_limit (threshold filtering is done inside FaultMonitor).
+        // This callback must NOT perform workload eviction — eviction is only
+        // allowed via the STOP signal path (recovery_callback above).
+        fault_monitor.set_callback([&node_client](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
             fault.set_fault_type(to_proto_fault_type(event.fault_type));
             fault.set_dmiss_count(current_dmiss);
-
-            uint32_t current_limit = 0;
-            {
-                std::lock_guard<std::mutex> lock(task_limit_mutex);
-                const auto limit_key = std::make_pair(event.workload_id_hash,
-                                                      event.task_id_hash);
-                auto it = task_current_limits.find(limit_key);
-                if (it != task_current_limits.end()) {
-                    current_limit = it->second;
-                }
-            }
-            fault.set_current_limit(current_limit);
+            fault.set_current_limit(0);  // debug: limit info is in FaultMonitor logs
 
             std::cout << "[main] Fault threshold exceeded! Forwarding fault to Timpani-O. "
                       << "workload_hash=0x" << std::hex << event.workload_id_hash
@@ -464,7 +445,7 @@ int main(int argc, char** argv)
                                         &node_client,
                                         &runtime_options,
                                         &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
-                                        &task_current_limits, &task_limit_mutex
+                                        &fault_monitor
 #ifdef CONFIG_TRACE_BPF_EVENT
                                         ,
                                         &schedstat_monitor, &gpdata_pid_to_task,
@@ -481,10 +462,8 @@ int main(int argc, char** argv)
                 workload_to_slots.clear();
                 workload_to_hash.clear();
             }
-            {
-                std::lock_guard<std::mutex> limit_lock(task_limit_mutex);
-                task_current_limits.clear();
-            }
+            // Reset FaultMonitor dmiss counters and limits for fresh table
+            fault_monitor.clear_state();
 
 #ifdef CONFIG_TRACE_BPF_EVENT
             if (runtime_options.enable_plot && schedstat_monitor.is_active()) {
@@ -505,6 +484,8 @@ int main(int argc, char** argv)
 
             // Build SlotEntry list from TtSlots
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
+            // Collect per-task current_limit for FaultMonitor threshold checks
+            std::map<std::pair<uint64_t, uint64_t>, uint32_t> new_limits;
             uint32_t slot_idx = 0;
             bool apply_success = true;
             std::string apply_error;
@@ -637,12 +618,12 @@ int main(int argc, char** argv)
                             workload_to_hash[tt_slot.workload_id()] = tt_slot.workload_id_hash();
                         }
 
-                        {
-                            std::lock_guard<std::mutex> limit_lock(task_limit_mutex);
+                        // Collect current_limit for FaultMonitor threshold
+                        if (tt_slot.current_limit() > 0) {
                             const auto limit_key = std::make_pair(
                                 tt_slot.workload_id_hash(),
                                 tt_slot.task_id_hash());
-                            task_current_limits[limit_key] = tt_slot.current_limit();
+                            new_limits[limit_key] = tt_slot.current_limit();
                         }
 
                         slot_idx++;
@@ -745,6 +726,9 @@ int main(int argc, char** argv)
                     }
                 }
             }
+
+            // Push collected limits to FaultMonitor for threshold-based filtering
+            fault_monitor.update_current_limits(new_limits);
 
             uint64_t hyperperiod_us = table.hyperperiod_us();
             uint64_t epoch_ns = table.epoch_ns();
