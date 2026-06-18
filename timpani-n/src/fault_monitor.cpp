@@ -114,6 +114,11 @@ int FaultMonitor::ring_buf_callback(void* ctx, void* data, size_t len) {
         should_report = true;
     }
 
+    // Invoke the fault callback to send the event to Timpani-O.
+    // Design Decision: This callback performs fault event transmission ONLY.
+    // Workload eviction (BPF cleanup, affinity reset) is NOT performed here.
+    // Eviction is exclusively triggered by Pullpiri's STOP signal, received
+    // through the separate recovery_callback path in main.cpp.
     if (should_report && self->callback_) {
         self->callback_(*event, current_dmiss);
     }

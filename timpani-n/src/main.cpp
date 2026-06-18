@@ -375,6 +375,26 @@ int main(int argc, char** argv)
             // Handle shutdown
         });
 
+        // ===================================================================
+        // EVICTION PATH (sole path for workload removal from Time-Triggered / CBS Execution Domain)
+        // ===================================================================
+        // Design Decision (0612 Meeting):
+        //   Workload lifecycle is managed by Pullpiri. Timpani-N must NOT
+        //   self-evict workloads upon fault detection. Eviction is performed
+        //   ONLY when a STOP signal is received through this path:
+        //
+        //   [Fault Flow]
+        //     BPF fault → FaultMonitor (threshold check)
+        //       → callback → send_fault(N→O) → O forwards to Pullpiri
+        //
+        //   [Eviction Flow — the ONLY eviction path]
+        //     Pullpiri decides STOP → O relays RecoverySignal(ACTION_STOP)
+        //       → recovery_callback (this handler) → BPF cleanup + affinity reset
+        //
+        //   These two flows are on separate paths. Fault sending is inherently
+        //   prioritized because it occurs immediately upon detection, while
+        //   eviction requires a round-trip through Pullpiri.
+        // ===================================================================
         node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
                                            &fault_monitor](const auto& recovery_signal) {
             std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
@@ -419,8 +439,13 @@ int main(int argc, char** argv)
 
         // Fault callback: invoked only when a task's cumulative dmiss exceeds
         // its current_limit (threshold filtering is done inside FaultMonitor).
-        // This callback must NOT perform workload eviction — eviction is only
-        // allowed via the STOP signal path (recovery_callback above).
+        //
+        // IMPORTANT: This callback must ONLY send the fault event to O.
+        // It must NOT perform any workload eviction (BPF cleanup, affinity
+        // reset, TimerMaster slot removal). Eviction is exclusively handled
+        // by the recovery_callback above, triggered by Pullpiri's STOP signal.
+        // Pullpiri owns the workload lifecycle; N does not know whether the
+        // workload is still alive or already terminated.
         fault_monitor.set_callback([&node_client](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
             fault.set_workload_id_hash(event.workload_id_hash);
