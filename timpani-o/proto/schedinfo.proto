@@ -100,5 +100,10 @@ message FaultInfo {
   string node_id = 2;
   string task_name = 3;
   FaultType type = 4;
+  // DEBUG/VERIFICATION ONLY (0612 meeting agreement).
+  // This field carries the cumulative deadline miss count for the task.
+  // It is intended solely for verifying that max_dmiss values propagate
+  // correctly through the pipeline (Pullpiri → O → N → O → Pullpiri).
+  // Do NOT use this field for policy decision-making.
   uint32 cumulative_dmiss = 5;
 }
