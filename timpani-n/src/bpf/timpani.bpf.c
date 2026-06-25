@@ -238,6 +238,7 @@ s32 BPF_PROG(select_cpu, struct task_struct* p, s32 prev_cpu, u64 wake_flags)
     struct TaskMeta* meta = bpf_map_lookup_elem(&task_meta_map, &pid);
     if (meta && (meta->scheduling_type == SCHED_TYPE_TT ||
                  meta->scheduling_type == SCHED_TYPE_CBS)) {
+        meta->activation_ns = bpf_ktime_get_ns();
         /* Steer to the CPU assigned in the schedule table */
         __u32 cpu = meta->assigned_cpu;
         if (cpu < 64 && (isolated_cpu_mask & (1ULL << cpu))) {
@@ -318,7 +319,6 @@ void BPF_PROG(running, struct task_struct* p)
     struct TaskMeta* meta = bpf_map_lookup_elem(&task_meta_map, &pid);
     if (meta) {
         __u64 now = bpf_ktime_get_ns();
-        meta->activation_ns = now;
         /* N1: Record CBS execution start */
         if (meta->scheduling_type == SCHED_TYPE_CBS) {
             __u64 key = cbs_key_from_meta(meta);
@@ -366,6 +366,26 @@ void BPF_PROG(stopping, struct task_struct* p, bool runnable)
             else
                 cbs->remaining_us -= elapsed_us;
             cbs->exec_start_ns = 0;
+
+            /* If deadline missed, emit DMISS fault */
+	    /* CBS deadline miss: task finished after its relative deadline */
+            if  (meta->activation_ns > 0 && cbs->deadline_us > 0) {
+                __u64 abs_deadline = meta->activation_ns + cbs->deadline_us * 1000ULL;
+                if (now > abs_deadline) {
+                    struct FaultEvent* fault;
+                    fault = bpf_ringbuf_reserve(&fault_ringbuf, sizeof(*fault), 0);
+                    if (fault) {
+                        fault->fault_type = FAULT_DMISS;
+                        fault->task_id_hash = meta->task_id_hash;
+                        fault->workload_id_hash = meta->workload_id_hash;
+                        fault->cpu = bpf_get_smp_processor_id();
+                        fault->expected_deadline_ns = abs_deadline;
+                        fault->actual_completion_ns = now;
+                        bpf_ringbuf_submit(fault, 0);
+                    }
+                    meta->activation_ns = 0;  // Clear to avoid duplicate faults
+                }
+            }
 
             /* If budget exhausted, emit BUDGET_EXCEED fault */
             if (cbs->remaining_us == 0) {
