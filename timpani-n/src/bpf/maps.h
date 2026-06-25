@@ -51,9 +51,11 @@ struct TaskMeta {
     __u64 workload_id_hash;
     __u64 task_id_hash;
     __u32 assigned_cpu;       /* CPU this TT/CBS task is scheduled on */
+    __u32 slot_duration_us;   /* TT slot duration; 0 for non-TT tasks */
     __u8  scheduling_type;
     __u8  layer;
-    __u16 _pad;
+    __u8  tt_runnable;
+    __u8  _pad;
     __u64 activation_ns;
     __u64 cgroup_id;
 };

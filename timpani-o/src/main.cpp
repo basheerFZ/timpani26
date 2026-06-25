@@ -19,7 +19,6 @@
 #include "node_config.h"
 #include "orchestrator_service.h"
 #include "schedinfo_service.h"
-#include "table_builder.h"
 #include "tlog.h"
 
 bool RunSchedInfoServer(int port, std::unique_ptr<SchedInfoServer>& server,
@@ -40,14 +39,6 @@ bool InitFaultClient(const std::string& addr, int port)
 
     FaultServiceClient& client = FaultServiceClient::GetInstance();
     return client.Initialize(piccolo_addr);
-}
-
-bool NotifyFaultDemo()
-{
-    FaultServiceClient& client = FaultServiceClient::GetInstance();
-
-    return client.NotifyFault("workload_demo", "node_demo", "task_demo",
-                              FaultType::DMISS);
 }
 
 std::unique_ptr<grpc::Server> g_orchestrator_server;
@@ -75,15 +66,14 @@ bool RunOrchestratorServer(int port)
 
 bool GetOptions(int argc, char* argv[], int& sinfo_port,
                 std::string& fault_addr, int& fault_port,
-                bool& notify_fault, std::string& node_config_file)
+                std::string& node_config_file)
 {
-    const char* short_opts = "hs:f:p:nc:";
+    const char* short_opts = "hs:f:p:c:";
     const struct option long_opts[] = {
         {"help", no_argument, nullptr, 'h'},
         {"sinfoport", required_argument, nullptr, 's'},
         {"faulthost", required_argument, nullptr, 'f'},
         {"faultport", required_argument, nullptr, 'p'},
-        {"notifyfault", no_argument, nullptr, 'n'},
         {"node-config", required_argument, nullptr, 'c'},
         {nullptr, 0, nullptr, 0}};
     int opt;
@@ -100,10 +90,6 @@ bool GetOptions(int argc, char* argv[], int& sinfo_port,
             case 'p':
                 fault_port = std::stoi(optarg);
                 break;
-            case 'n':
-                // FIXME: NotifyFault option for testing
-                notify_fault = true;
-                break;
             case 'c':
                 node_config_file = optarg;
                 break;
@@ -117,7 +103,6 @@ bool GetOptions(int argc, char* argv[], int& sinfo_port,
                     << "  -f <address>\t\tFaultService host address (default: "
                        "localhost)\n"
                     << "  -p <port>\t\tPort for FaultService (default: 50053)\n"
-                    << "  -n\t\t\tEnable NotifyFault demo (default: false)\n"
                     << "  -c, --node-config <file>\tNode configuration YAML "
                        "file\n"
                     << "  -h\t\t\tShow this help message\n";
@@ -137,11 +122,10 @@ int main(int argc, char** argv)
     int sinfo_port = 50052;
     std::string fault_addr = "localhost";
     int fault_port = 50053;
-    bool notify_fault = false;     // Flag for NotifyFault method demo
     std::string node_config_file;  // Node configuration file path
 
     if (!GetOptions(argc, argv, sinfo_port, fault_addr, fault_port,
-                    notify_fault, node_config_file)) {
+                    node_config_file)) {
         exit(EXIT_FAILURE);
     }
 
@@ -201,7 +185,7 @@ int main(int argc, char** argv)
 
         // Check if SchedInfo has been updated and queue replay as needed.
         bool changed = false;
-        SchedInfoMap sched_map = sinfo_server->GetSchedInfoMap(&changed);
+        ScheduleTableMap sched_tables = sinfo_server->GetScheduleTables(&changed);
 
         auto connected_nodes_vec = g_orchestrator_service->get_connected_node_ids();
         std::set<std::string> connected_nodes(connected_nodes_vec.begin(),
@@ -234,14 +218,15 @@ int main(int argc, char** argv)
             synced_nodes.clear();
             replay_failures.clear();
             next_retry_time.clear();
-            if (sched_map.empty()) {
+            if (sched_tables.empty()) {
                 TLOG_WARN("SchedInfo marked changed but map is empty");
             } else {
                 TLOG_INFO("SchedInfo changed - replay queued for all connected nodes");
             }
+            sinfo_server->DumpSchedInfo();
         }
 
-        if (replay_pending && !sched_map.empty()) {
+        if (replay_pending && !sched_tables.empty()) {
             if (connected_nodes.empty()) {
                 if (!warned_no_nodes_for_replay) {
                     TLOG_WARN("SchedInfo available but no nodes connected yet");
@@ -262,10 +247,16 @@ int main(int argc, char** argv)
                         continue;
                     }
 
+                    // Look up the combined table for this node
+                    auto it = sched_tables.find(node_id);
+                    if (it == sched_tables.end()) {
+                        TLOG_DEBUG("No schedule table for node '", node_id, "' — skipping");
+                        synced_nodes.insert(node_id);
+                        continue;
+                    }
+
                     TLOG_INFO("Replaying schedule table for node '", node_id, "'");
-                    auto table =
-                        timpani::orchestrator::BuildScheduleTable(node_id, sched_map);
-                    bool ok = g_orchestrator_service->push_full_table(node_id, table);
+                    bool ok = g_orchestrator_service->push_full_table(node_id, it->second);
                     TLOG_INFO("push_full_table(\"", node_id, "\") => ",
                               ok ? "OK" : "FAILED");
 
@@ -309,12 +300,6 @@ int main(int argc, char** argv)
                             "Schedule replay completed for all connected nodes");
                     }
                 }
-            }
-        }
-
-        if (notify_fault) {
-            if (NotifyFaultDemo()) {
-                notify_fault = false;  // Reset the flag after notification
             }
         }
     }

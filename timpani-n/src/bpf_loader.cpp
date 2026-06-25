@@ -221,6 +221,11 @@ bool BpfLoader::update_current_slot(uint32_t cpu, uint32_t slot_idx) {
     return bpf_map_update_elem(bpf_map__fd(skel_->maps.current_slot_map), &cpu, &slot_idx, BPF_ANY) == 0;
 }
 
+bool BpfLoader::update_next_tt_start(uint32_t cpu, uint64_t next_start_ns) {
+    if (!skel_) return false;
+    return bpf_map_update_elem(bpf_map__fd(skel_->maps.next_tt_start_map), &cpu, &next_start_ns, BPF_ANY) == 0;
+}
+
 int BpfLoader::get_fault_ringbuf_fd() const {
     if (!skel_) return -1;
     return bpf_map__fd(skel_->maps.fault_ringbuf);

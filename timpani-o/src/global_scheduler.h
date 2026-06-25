@@ -3,133 +3,221 @@
  * SPDX-License-Identifier: MIT
  */
 
-#pragma once
+#ifndef GLOBAL_SCHEDULER_H
+#define GLOBAL_SCHEDULER_H
 
-#include "task.h"
-#include "sched_info.h"
-#include "node_config.h"
 #include <map>
-#include <vector>
-#include <string>
 #include <memory>
+#include <string>
+#include <variant>
+#include <vector>
+#include <stdint.h>
 
-// Type definitions for consistency with schedinfo_service.h
-using NodeSchedInfoMap = std::map<std::string, sched_info_t>; // node_id -> sched_info_t
+#include "node_config.h"
+#include "proto/node_control.grpc.pb.h"
+
+// ---------------------------------------------------------------------------
+// DDR-007 workload classification types
+// ---------------------------------------------------------------------------
 
 /**
- * @brief Global scheduler for task scheduling across multiple nodes
+ * @brief DDR-007 scheduling mechanism — determined by TemporalClass.
  *
- * Simplified version that works with gRPC schedinfo_server and NodeConfigManager.
- * Removed external dependencies and focuses on core scheduling algorithms.
+ * TEMPORAL_PERIODIC (L1) → TT (Time-Triggered)
+ * TEMPORAL_SPORADIC (L2) → CBS (Constant Bandwidth Server)
+ */
+enum class Mechanism {
+    TT,   // L1 Periodic — static time-triggered slots
+    CBS,  // L2 Sporadic — Constant Bandwidth Server
+};
+
+/**
+ * @brief Lightweight classified task for the scheduler pipeline.
+ *
+ * Produced by the service layer from gRPC TaskInfo + TemporalClass,
+ * consumed by GlobalScheduler::generate_schedule().
+ */
+struct ClassifiedTask {
+    std::string workload_id;
+    std::string task_id;
+    Mechanism   mechanism;
+    uint32_t    period_us;      // L1: period / L2: min_inter_arrival
+    uint32_t    wcet_us;        // worst-case execution time
+    uint32_t    deadline_us;
+    int         assigned_cpu;   // filled during CPU assignment (-1 = unassigned)
+
+    ClassifiedTask()
+        : mechanism(Mechanism::TT),
+          period_us(0), wcet_us(0), deadline_us(0),
+          assigned_cpu(-1) {}
+};
+
+/**
+ * @brief Schedule table storage: node_id → combined table (all workloads merged)
+ */
+using ScheduleTableMap =
+    std::map<std::string, timpani::node::v1::HierarchicalScheduleTable>;
+
+// ---------------------------------------------------------------------------
+// Intermediate structures for the 5-step pipeline (DDR-007 §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A placed TT slot within a hyperperiod timeline.
+ */
+struct TtSlotPlacement {
+    std::string workload_id;
+    std::string task_id;
+    uint32_t    offset_us;
+    uint32_t    duration_us;
+    uint32_t    deadline_us;
+    int         cpu;
+};
+
+/**
+ * @brief A gap interval between TT slots (DDR-007 §3.5 4-A).
+ */
+struct GapInterval {
+    uint32_t start_us;
+    uint32_t end_us;
+    uint32_t length_us;
+};
+
+/**
+ * @brief CBS budget allocation for a single L2 task (DDR-007 §3.5 4-C).
+ */
+struct CbsAllocation {
+    std::string workload_id;
+    std::string task_id;
+    uint32_t    budget_us;      // Cs — server budget = WCET per arrival
+    uint32_t    period_us;      // Ts — replenishment period = MIT
+    uint32_t    deadline_us;
+    int         cpu;
+};
+
+/**
+ * @brief Reasons why a schedule is infeasible.
+ */
+enum class InfeasibleReason {
+    NonHarmonicPeriod,   // L1 task periods are not harmonic
+    TtSlotConflict,      // TT slot placement conflict on timeline
+    NoCbsBandwidth,      // No residual bandwidth for CBS after TT placement
+    SafetyCbsExceeded,   // L2 CBS bandwidth exceeds available budget
+    NoCbsCpu,            // No isolated CPU available for CBS tasks
+    UtilizationExceeded, // Total utilization exceeds bound
+};
+
+/**
+ * @brief Error returned when schedule generation fails.
+ */
+struct InfeasibleError {
+    InfeasibleReason reason;
+    int              cpu;        // -1 if not CPU-specific
+    std::string      task_id;    // empty if not task-specific
+    std::string      details;    // human-readable explanation
+
+    InfeasibleError() : reason(InfeasibleReason::UtilizationExceeded), cpu(-1) {}
+    InfeasibleError(InfeasibleReason r, int c, const std::string& t, const std::string& d)
+        : reason(r), cpu(c), task_id(t), details(d) {}
+};
+
+/**
+ * @brief Per-CPU schedule produced during the pipeline.
+ */
+struct PerCpuSchedule {
+    int                            cpu_id;
+    std::vector<TtSlotPlacement>   tt_slots;
+    std::vector<GapInterval>       gaps;
+    std::vector<CbsAllocation>     cbs_allocations;
+    double                         u_tt;    // Σ(wcet/period) for TT tasks
+    double                         u_cbs;   // Σ(Cs/Ts) for CBS tasks
+
+    PerCpuSchedule() : cpu_id(-1), u_tt(0.0), u_cbs(0.0) {}
+    explicit PerCpuSchedule(int cpu) : cpu_id(cpu), u_tt(0.0), u_cbs(0.0) {}
+};
+
+/**
+ * @brief Result type: either a schedule table or an infeasibility error.
+ */
+using ScheduleResult =
+    std::variant<timpani::node::v1::HierarchicalScheduleTable, InfeasibleError>;
+
+// ---------------------------------------------------------------------------
+// GlobalScheduler — DDR-007 §3 five-step pipeline
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Generates integrated TT+CBS schedule tables per DDR-007.
+ *
+ * Pipeline:
+ *   Step 1: Classification (done by caller — TemporalClass → Mechanism)
+ *   Step 2: Isolated CPU assignment (partitioned scheduling)
+ *   Step 3: L1 TT slot placement (harmonic-period DM ordering)
+ *   Step 4: Gap analysis + L2 CBS budget allocation (feasibility check)
+ *   Step 5: Emit HierarchicalScheduleTable protobuf
  */
 class GlobalScheduler {
 public:
-    /**
-     * @brief Constructor
-     * @param node_config_manager Node configuration manager for getting node/CPU info
-     */
     explicit GlobalScheduler(std::shared_ptr<NodeConfigManager> node_config_manager);
-    ~GlobalScheduler();
+    ~GlobalScheduler() = default;
 
     /**
-     * @brief Set tasks to be scheduled (called from gRPC server)
-     * @param tasks Vector of tasks to schedule
-     */
-    void set_tasks(const std::vector<Task>& tasks);
-
-    /**
-     * @brief Execute scheduling algorithm
-     * @param algorithm Scheduling algorithm ("best_fit_decreasing" or "least_loaded")
-     * @return true if scheduling was successful, false otherwise
-     */
-    bool schedule(const std::string& algorithm = "best_fit_decreasing");
-
-    /**
-     * @brief Get the final schedules map (node_id -> sched_info_t)
-     * @return Map of node schedules
-     */
-    const NodeSchedInfoMap& get_sched_info_map() const;
-
-    /**
-     * @brief Check if schedules are available
-     * @return true if schedules exist, false otherwise
-     */
-    bool has_schedules() const;
-
-    /**
-     * @brief Get total number of scheduled tasks
-     * @return Number of scheduled tasks
-     */
-    size_t get_total_scheduled_tasks() const;
-
-    /**
-     * @brief Clear all schedules and reset state
-     */
-    void clear();
-
-    /**
-     * @brief Pre-load CPU utilization from previously scheduled workloads
+     * @brief Generate a schedule table for a single node.
      *
-     * Call this after clear() and before schedule() so that the scheduler
-     * accounts for resources already committed to other workloads.
-     *
-     * @param existing_schedules Node schedule info maps from other workloads
+     * @param node_id   Target node identifier
+     * @param tasks     Pre-classified tasks (Mechanism already set)
+     * @return ScheduleResult — HierarchicalScheduleTable on success,
+     *                          InfeasibleError on failure
      */
-    void preload_utilization(const std::vector<NodeSchedInfoMap>& existing_schedules);
+    ScheduleResult generate_schedule(const std::string& node_id,
+                                     const std::vector<ClassifiedTask>& tasks);
+
+    // DDR-007 §3.5 feasibility constants
+    static constexpr double U_OVERHEAD  = 0.02;   // Timer Master + BPF dispatch
+    static constexpr double U_BOUND     = 0.80;   // Conservative utilization bound (DDR-004 §5)
+    static constexpr uint32_t CBS_MIN_EXEC_US = 100; // Minimum usable gap (μs)
 
 private:
-    // Apply pre-loaded utilization (called from within schedule())
-    void apply_preloaded_utilization();
+    // ── Step 2: CPU assignment ──
+    bool assign_cpus(const std::string& node_id,
+                     std::vector<ClassifiedTask>& tt_tasks,
+                     std::vector<ClassifiedTask>& cbs_tasks,
+                     std::map<int, PerCpuSchedule>& cpu_schedules);
 
-    // Node configuration manager
+    // ── Step 3: TT slot placement (per CPU) ──
+    bool place_tt_slots(int cpu,
+                        const std::vector<ClassifiedTask>& tt_tasks,
+                        uint64_t hyperperiod_us,
+                        PerCpuSchedule& schedule,
+                        InfeasibleError& error);
+
+    // ── Step 4-A: Gap extraction ──
+    static std::vector<GapInterval> compute_gaps(
+        const std::vector<TtSlotPlacement>& slots,
+        uint64_t hyperperiod_us);
+
+    // ── Step 4-B/C/D: CBS budget allocation (per CPU) ──
+    bool allocate_cbs_budgets(int cpu,
+                              const std::vector<ClassifiedTask>& cbs_tasks,
+                              double u_tt,
+                              const std::vector<GapInterval>& gaps,
+                              PerCpuSchedule& schedule,
+                              InfeasibleError& error);
+
+    // ── Step 5: Build protobuf table ──
+    timpani::node::v1::HierarchicalScheduleTable build_table(
+        const std::string& node_id,
+        const std::map<int, PerCpuSchedule>& cpu_schedules,
+        uint64_t hyperperiod_us);
+
+    // ── Math utilities ──
+    static uint64_t gcd(uint64_t a, uint64_t b);
+    static uint64_t lcm(uint64_t a, uint64_t b);
+    static uint64_t calculate_hyperperiod(const std::vector<uint64_t>& periods);
+    static bool     validate_harmonic(const std::vector<uint64_t>& periods);
+    static uint64_t fnv1a_hash(const char* s);
+
     std::shared_ptr<NodeConfigManager> node_config_manager_;
-
-    // Available CPUs per node (updated from node configuration)
-    std::map<std::string, std::vector<int>> available_cpus_per_node_;
-
-    // CPU utilization tracking per node and CPU
-    std::map<std::string, std::map<int, double>> cpu_utilization_per_node_;
-
-    // Tasks to be scheduled
-    std::vector<Task> tasks_;
-
-    // Pre-loaded schedules from other workloads (applied during schedule())
-    std::vector<NodeSchedInfoMap> preloaded_schedules_;
-
-    // Final schedule map (node_id -> sched_info_t)
-    NodeSchedInfoMap sched_info_map_;
-
-    // CPU_UTILIZATION_THRESHOLD
-    static constexpr double CPU_UTILIZATION_THRESHOLD = 0.90;
-
-    // New scheduling algorithm based on target node requirements
-    void schedule_with_target_node_priority();
-
-    // Core scheduling algorithms (legacy)
-    void schedule_with_least_loaded();
-    void schedule_with_best_fit_decreasing();
-
-    // Schedule generation
-    void generate_schedules();
-
-    // New helper functions for target node scheduling
-    int find_best_cpu_for_task(const Task& task, const std::string& node_id);
-    std::vector<int> get_sorted_cpus_by_utilization(const std::string& node_id, bool prefer_high_utilization = true);
-    bool assign_task_to_node_cpu(Task& task, const std::string& node_id, int cpu_id);
-
-    // Algorithm helper functions (legacy)
-    std::string find_best_node_least_loaded(const Task& task);
-    std::string find_best_node_best_fit_decreasing(const Task& task);
-
-    // Utility functions
-    bool is_task_schedulable_on_node(const Task& task, const std::string& node_id);
-    double calculate_node_utilization(const std::string& node_id, bool include_new_task = false, const Task* new_task = nullptr);
-    double calculate_cpu_utilization(const std::string& node_id, int cpu_id);
-
-    // Internal helper functions
-    void initialize_available_cpus();
-    void initialize_cpu_utilization_tracking();
-    void cleanup_schedules();
-    void print_scheduling_results();
-    void print_node_details(const std::string& node_id);
 };
+
+#endif // GLOBAL_SCHEDULER_H

@@ -27,6 +27,7 @@ class TimerMaster
         uint32_t    cpu;
         uint32_t    slot_idx;
         uint64_t    offset_ns;
+        uint64_t    duration_ns;
         uint64_t    task_id_hash;
         std::string task_name;   /* task comm name — used for targeted wake */
     };
@@ -43,6 +44,8 @@ class TimerMaster
   private:
     void thread_loop();
     void wake_task(uint64_t task_id_hash);  /* targeted wake: only this task's slot */
+    uint64_t compute_next_tt_start_ns(size_t current_slot_idx,
+                                      uint64_t current_hyperperiod_start) const;
 
     BpfLoader& bpf_loader_;
     std::atomic<bool> running_;

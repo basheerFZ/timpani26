@@ -22,8 +22,6 @@ add_executable(test_schedinfo_service
     ../src/schedinfo_service.cpp
     ../src/node_config.cpp
     ../src/global_scheduler.cpp
-    ../src/scheduler_utils.cpp
-    ../src/hyperperiod_manager.cpp
 )
 
 # Link libraries
@@ -33,6 +31,7 @@ target_link_libraries(test_schedinfo_service
     gRPC::grpc++
     protobuf::libprotobuf
     schedinfo_proto  # Proto library from proto directory
+    node_control_proto
     pthread
 )
 
@@ -75,13 +74,16 @@ add_executable(test_global_scheduler
     test_global_scheduler.cpp
     ../src/global_scheduler.cpp
     ../src/node_config.cpp
-    ../src/scheduler_utils.cpp
 )
 
 # Link libraries for GlobalScheduler test
 target_link_libraries(test_global_scheduler
     GTest::gtest
     GTest::gtest_main
+    gRPC::grpc++
+    protobuf::libprotobuf
+    schedinfo_proto
+    node_control_proto
     pthread
 )
 

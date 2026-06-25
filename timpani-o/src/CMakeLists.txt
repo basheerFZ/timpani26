@@ -8,10 +8,7 @@ add_executable(timpani-o
   fault_client.cpp
   node_config.cpp
   global_scheduler.cpp
-  scheduler_utils.cpp
-  hyperperiod_manager.cpp
   orchestrator_service.cpp
-  table_builder.cpp
 )
 
 target_link_libraries(timpani-o

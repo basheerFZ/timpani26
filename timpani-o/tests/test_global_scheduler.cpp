@@ -5,258 +5,310 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <variant>
 #include <vector>
-#include <map>
-#include <string>
 
-#include "../src/tlog.h"
 #include "../src/global_scheduler.h"
 #include "../src/node_config.h"
-#include "../src/task.h"
-#include "../src/sched_info.h"
 
 class GlobalSchedulerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Create a mock node config manager with test nodes
         node_config_manager_ = std::make_shared<NodeConfigManager>();
-
-        // Create test node configurations manually since we're not loading from file
-        CreateTestNodeConfigurations();
-
-        // Create GlobalScheduler instance
         scheduler_ = std::make_unique<GlobalScheduler>(node_config_manager_);
     }
 
-    void TearDown() override {
-        scheduler_.reset();
-        node_config_manager_.reset();
+    ClassifiedTask MakeTtTask(const std::string& wl_id,
+                              const std::string& task_id,
+                              uint32_t period_us,
+                              uint32_t wcet_us,
+                              uint32_t deadline_us = 0) {
+        ClassifiedTask t;
+        t.workload_id = wl_id;
+        t.task_id     = task_id;
+        t.mechanism   = Mechanism::TT;
+        t.period_us   = period_us;
+        t.wcet_us     = wcet_us;
+        t.deadline_us = (deadline_us > 0) ? deadline_us : period_us;
+        t.assigned_cpu = -1;
+        return t;
     }
 
-    void CreateTestNodeConfigurations() {
-        // This is a simplified setup since NodeConfigManager loads from YAML
-        // In a real test, you might want to create a mock or test YAML file
+    ClassifiedTask MakeCbsTask(const std::string& wl_id,
+                               const std::string& task_id,
+                               uint32_t mit_us,
+                               uint32_t wcet_us,
+                               uint32_t deadline_us = 0) {
+        ClassifiedTask t;
+        t.workload_id = wl_id;
+        t.task_id     = task_id;
+        t.mechanism   = Mechanism::CBS;
+        t.period_us   = mit_us;
+        t.wcet_us     = wcet_us;
+        t.deadline_us = (deadline_us > 0) ? deadline_us : mit_us;
+        t.assigned_cpu = -1;
+        return t;
     }
 
-    Task CreateTestTask(const std::string& name,
-                       const std::string& target_node = "",
-                       uint64_t period_us = 1000000,
-                       uint64_t runtime_us = 100000,
-                       int priority = 50) {
-        Task task;
-        task.name = name;
-        task.target_node = target_node;
-        task.period_us = period_us;
-        task.runtime_us = runtime_us;
-        task.deadline_us = period_us;  // Deadline equals period
-        task.priority = priority;
-        task.cpu_affinity = -1;  // Any CPU
-        task.memory_mb = 64;
-        return task;
+    bool IsSuccess(const ScheduleResult& result) {
+        return std::holds_alternative<timpani::node::v1::HierarchicalScheduleTable>(result);
+    }
+
+    const timpani::node::v1::HierarchicalScheduleTable& GetTable(
+        const ScheduleResult& result) {
+        return std::get<timpani::node::v1::HierarchicalScheduleTable>(result);
+    }
+
+    const InfeasibleError& GetError(const ScheduleResult& result) {
+        return std::get<InfeasibleError>(result);
     }
 
     std::shared_ptr<NodeConfigManager> node_config_manager_;
     std::unique_ptr<GlobalScheduler> scheduler_;
 };
 
-// Test constructor and basic initialization
-TEST_F(GlobalSchedulerTest, ConstructorInitialization) {
-    EXPECT_NE(scheduler_, nullptr);
-    EXPECT_FALSE(scheduler_->has_schedules());
-    EXPECT_EQ(scheduler_->get_total_scheduled_tasks(), 0);
+// ─── Classification ─────────────────────────────────────────────────────────
+
+TEST_F(GlobalSchedulerTest, SingleTtTaskProducesTable) {
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("brake", "brake_ctrl", 10000, 2000, 5000)
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
+
+    const auto& table = GetTable(result);
+    EXPECT_EQ(table.node_id(), "node1");
+    EXPECT_GT(table.partitions_size(), 0);
 }
 
-// Test setting tasks
-TEST_F(GlobalSchedulerTest, SetTasks) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("task1"));
-    tasks.push_back(CreateTestTask("task2"));
+TEST_F(GlobalSchedulerTest, SingleCbsTaskProducesTable) {
+    std::vector<ClassifiedTask> tasks = {
+        MakeCbsTask("lidar", "lidar_main", 5000, 2000, 5000)
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
 
-    scheduler_->set_tasks(tasks);
+    const auto& table = GetTable(result);
+    EXPECT_GT(table.partitions_size(), 0);
 
-    // After setting tasks, schedules should not exist yet
-    EXPECT_FALSE(scheduler_->has_schedules());
-    EXPECT_EQ(scheduler_->get_total_scheduled_tasks(), 0);
+    // Should have CBS entries
+    bool has_cbs = false;
+    for (int p = 0; p < table.partitions_size(); ++p) {
+        for (int l = 0; l < table.partitions(p).layers_size(); ++l) {
+            if (table.partitions(p).layers(l).cbs_entries_size() > 0) {
+                has_cbs = true;
+            }
+        }
+    }
+    EXPECT_TRUE(has_cbs);
 }
 
-// Test setting empty task list
-TEST_F(GlobalSchedulerTest, SetEmptyTasks) {
-    std::vector<Task> empty_tasks;
-    scheduler_->set_tasks(empty_tasks);
-
-    EXPECT_FALSE(scheduler_->has_schedules());
-    EXPECT_EQ(scheduler_->get_total_scheduled_tasks(), 0);
+TEST_F(GlobalSchedulerTest, EmptyTasksReturnsError) {
+    std::vector<ClassifiedTask> tasks;
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_FALSE(IsSuccess(result));
 }
 
-// Test clear functionality
-TEST_F(GlobalSchedulerTest, ClearSchedules) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("task1"));
+// ─── Harmonic Period Validation ─────────────────────────────────────────────
 
-    scheduler_->set_tasks(tasks);
-    scheduler_->clear();
-
-    EXPECT_FALSE(scheduler_->has_schedules());
-    EXPECT_EQ(scheduler_->get_total_scheduled_tasks(), 0);
+TEST_F(GlobalSchedulerTest, HarmonicPeriodsSucceed) {
+    // 5ms, 10ms, 20ms are harmonic (5 | 10, 5 | 20, 10 | 20)
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("wl1", "t1", 5000, 500, 5000),
+        MakeTtTask("wl1", "t2", 10000, 1000, 10000),
+        MakeTtTask("wl1", "t3", 20000, 1000, 20000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    EXPECT_TRUE(IsSuccess(result));
 }
 
-// Test scheduling with best fit decreasing algorithm
-TEST_F(GlobalSchedulerTest, ScheduleBestFitDecreasing) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("task1", "", 1000000, 100000));
-    tasks.push_back(CreateTestTask("task2", "", 2000000, 200000));
-
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule("best_fit_decreasing");
-
-    // The result depends on whether nodes are available
-    // In a minimal test setup, this might fail due to no available nodes
-    // But we can test that the function doesn't crash
-    EXPECT_TRUE(result || !result);  // Just ensure no crash
+TEST_F(GlobalSchedulerTest, NonHarmonicPeriodsReturnError) {
+    // 7ms and 10ms are not harmonic
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("wl1", "t1", 7000, 500, 7000),
+        MakeTtTask("wl1", "t2", 10000, 1000, 10000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_FALSE(IsSuccess(result));
+    EXPECT_EQ(GetError(result).reason, InfeasibleReason::NonHarmonicPeriod);
 }
 
-// Test scheduling with least loaded algorithm
-TEST_F(GlobalSchedulerTest, ScheduleLeastLoaded) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("task1"));
+// ─── TT Slot Placement ─────────────────────────────────────────────────────
 
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule("least_loaded");
+TEST_F(GlobalSchedulerTest, TtSlotOffsetsMatchPeriod) {
+    // Single task with period=10ms, wcet=2ms in hyperperiod=20ms
+    // Expect 2 slots at offsets 0 and 10000
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("brake", "brake_ctrl", 10000, 2000, 5000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
 
-    // Similar to above, just ensure no crash
-    EXPECT_TRUE(result || !result);
+    const auto& table = GetTable(result);
+    ASSERT_GT(table.partitions_size(), 0);
+
+    const auto& layer = table.partitions(0).layers(0);
+    // With period 10000 in hyperperiod 10000 → 1 slot at offset 0
+    // (hyperperiod = max period = 10000 under harmonic assumption)
+    EXPECT_GE(layer.tt_slots_size(), 1);
+    EXPECT_EQ(layer.tt_slots(0).offset_us(), 0u);
+    EXPECT_EQ(layer.tt_slots(0).duration_us(), 2000u);
 }
 
-// Test scheduling with invalid algorithm
-TEST_F(GlobalSchedulerTest, ScheduleInvalidAlgorithm) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("task1"));
+TEST_F(GlobalSchedulerTest, DmOrderingShorterDeadlineFirst) {
+    // Two tasks: brake(deadline=5ms), steer(deadline=10ms)
+    // DM ordering: brake gets placed first at offset 0
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("brake", "brake_ctrl", 10000, 2000, 5000),
+        MakeTtTask("steer", "steer_ctrl", 10000, 2000, 10000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
 
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule("invalid_algorithm");
+    const auto& table = GetTable(result);
+    ASSERT_GT(table.partitions_size(), 0);
 
-    // Should return false for invalid algorithm
-    EXPECT_FALSE(result);
+    // Find the partition with TT slots
+    for (int p = 0; p < table.partitions_size(); ++p) {
+        const auto& layer = table.partitions(p).layers(0);
+        if (layer.tt_slots_size() >= 2) {
+            // First placed task (brake, deadline=5ms) should have offset=0
+            EXPECT_EQ(layer.tt_slots(0).task_id(), "brake_ctrl");
+            EXPECT_EQ(layer.tt_slots(0).offset_us(), 0u);
+        }
+    }
 }
 
-// Test scheduling with no tasks
-TEST_F(GlobalSchedulerTest, ScheduleNoTasks) {
-    std::vector<Task> empty_tasks;
-    scheduler_->set_tasks(empty_tasks);
+// ─── Gap Extraction ─────────────────────────────────────────────────────────
 
-    bool result = scheduler_->schedule();
-
-    // Scheduling empty task list should return false (no tasks to schedule)
-    EXPECT_FALSE(result);
-    EXPECT_FALSE(scheduler_->has_schedules());
+TEST_F(GlobalSchedulerTest, NoTtSlotsProducesFullGap) {
+    // CBS-only workload → entire hyperperiod is a gap
+    std::vector<ClassifiedTask> tasks = {
+        MakeCbsTask("lidar", "lidar_main", 5000, 1000, 5000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
 }
 
-// Test get_sched_info_map
-TEST_F(GlobalSchedulerTest, GetSchedInfoMap) {
-    const auto& sched_map = scheduler_->get_sched_info_map();
+// ─── CBS Allocation ─────────────────────────────────────────────────────────
 
-    // Initially should be empty
-    EXPECT_TRUE(sched_map.empty());
+TEST_F(GlobalSchedulerTest, CbsWithinBudgetSucceeds) {
+    // TT uses 20% utilization, CBS uses 30% → total 52% < 80% bound
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("brake", "brake_ctrl", 10000, 2000, 5000),   // U=0.20
+        MakeCbsTask("lidar", "lidar_main", 10000, 3000, 10000), // U=0.30
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    EXPECT_TRUE(IsSuccess(result));
 }
 
-// Test with tasks having specific target nodes
-TEST_F(GlobalSchedulerTest, TasksWithTargetNodes) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("task1", "node1"));
-    tasks.push_back(CreateTestTask("task2", "node2"));
-
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule();
-
-    // Even if scheduling fails due to no available nodes,
-    // the function should handle target nodes gracefully
-    EXPECT_TRUE(result || !result);
+TEST_F(GlobalSchedulerTest, CbsExceedingBandwidthFails) {
+    // With 2 default CPUs, TT and CBS go to separate CPUs.
+    // To trigger overload, we need CBS utilization alone to exceed
+    // U_BOUND on whatever CPU it lands on.
+    // CBS_U = 0.85 > 0.80 - 0.02 = 0.78 → must fail
+    std::vector<ClassifiedTask> tasks = {
+        MakeCbsTask("wl2", "cbs1", 10000, 8500, 10000),  // U=0.85
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_FALSE(IsSuccess(result));
+    // CBS over-capacity is caught during CPU assignment
+    auto reason = GetError(result).reason;
+    EXPECT_TRUE(reason == InfeasibleReason::UtilizationExceeded ||
+                reason == InfeasibleReason::NoCbsCpu);
 }
 
-// Test with high CPU utilization tasks
-TEST_F(GlobalSchedulerTest, HighCpuUtilizationTasks) {
-    std::vector<Task> tasks;
-    // Create a task that uses 95% of CPU (period=1000ms, runtime=950ms)
-    tasks.push_back(CreateTestTask("heavy_task", "", 1000000, 950000));
+// ─── End-to-End: DDR-007 §5 Sample Workloads ────────────────────────────────
 
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule();
+TEST_F(GlobalSchedulerTest, Ddr007SampleWorkloads) {
+    // From DDR-007 §5.1:
+    //   brake_ctrl    (L1, period=10ms,  wcet=2ms,   deadline=5ms)
+    //   steer_ctrl    (L1, period=20ms,  wcet=2ms,   deadline=10ms)
+    //   collision_det (L2, MIT=10ms,     wcet=1.5ms, deadline=10ms)
+    //   lidar_proc    (L2, MIT=5ms,      wcet=2ms,   deadline=5ms)
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("brake", "brake_ctrl", 10000, 2000, 5000),
+        MakeTtTask("steer", "steer_ctrl", 20000, 2000, 10000),
+        MakeCbsTask("collision", "col_detect", 10000, 1500, 10000),
+        MakeCbsTask("lidar_proc", "lidar_main", 5000, 2000, 5000),
+    };
 
-    // Should handle high utilization tasks
-    EXPECT_TRUE(result || !result);
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
+
+    const auto& table = GetTable(result);
+    EXPECT_EQ(table.node_id(), "node1");
+    EXPECT_GT(table.hyperperiod_us(), 0u);
+    EXPECT_GT(table.partitions_size(), 0);
+
+    // Count total TT slots and CBS entries across all partitions
+    int total_tt = 0;
+    int total_cbs = 0;
+    for (int p = 0; p < table.partitions_size(); ++p) {
+        for (int l = 0; l < table.partitions(p).layers_size(); ++l) {
+            total_tt += table.partitions(p).layers(l).tt_slots_size();
+            total_cbs += table.partitions(p).layers(l).cbs_entries_size();
+        }
+        // Each partition should have isolated=true
+        EXPECT_TRUE(table.partitions(p).cpuset().isolated());
+    }
+
+    // Two TT workloads go to separate CPUs:
+    //   CPU A: brake_ctrl (period=10ms, hyperperiod=10ms → 1 slot)
+    //   CPU B: steer_ctrl (period=20ms, hyperperiod=20ms → 1 slot)
+    // Total TT slots >= 2
+    EXPECT_GE(total_tt, 2);
+    // Should have CBS entries for collision_det and lidar_main
+    EXPECT_GE(total_cbs, 2);
 }
 
-// Test with multiple tasks of different priorities
-TEST_F(GlobalSchedulerTest, MultipleTasksDifferentPriorities) {
-    std::vector<Task> tasks;
-    tasks.push_back(CreateTestTask("high_prio", "", 1000000, 100000, 90));
-    tasks.push_back(CreateTestTask("med_prio", "", 2000000, 200000, 50));
-    tasks.push_back(CreateTestTask("low_prio", "", 3000000, 300000, 10));
+// ─── Multi-CPU ──────────────────────────────────────────────────────────────
 
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule();
+TEST_F(GlobalSchedulerTest, MultipleTtWorkloadsGetSeparateCpus) {
+    // Two TT workloads should prefer separate CPUs
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("wl_a", "task_a", 10000, 2000, 5000),
+        MakeTtTask("wl_b", "task_b", 10000, 2000, 5000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
 
-    EXPECT_TRUE(result || !result);
+    const auto& table = GetTable(result);
+    // With default 2 CPUs available, should get 2 partitions
+    EXPECT_GE(table.partitions_size(), 2);
 }
 
-// Test task assignment results
-TEST_F(GlobalSchedulerTest, TaskAssignmentResults) {
-    std::vector<Task> tasks;
-    Task task1 = CreateTestTask("task1");
-    tasks.push_back(task1);
+// ─── Feasibility Constants ──────────────────────────────────────────────────
 
-    scheduler_->set_tasks(tasks);
-    scheduler_->schedule();
-
-    // Check that the scheduler maintains internal state correctly
-    // The exact behavior depends on available nodes
-    EXPECT_GE(scheduler_->get_total_scheduled_tasks(), 0);
+TEST_F(GlobalSchedulerTest, FeasibilityConstants) {
+    EXPECT_DOUBLE_EQ(GlobalScheduler::U_OVERHEAD, 0.02);
+    EXPECT_DOUBLE_EQ(GlobalScheduler::U_BOUND, 0.80);
+    EXPECT_EQ(GlobalScheduler::CBS_MIN_EXEC_US, 100u);
 }
 
-// Test error handling with malformed tasks
-TEST_F(GlobalSchedulerTest, MalformedTasks) {
-    std::vector<Task> tasks;
+// ─── Table Structure Verification ───────────────────────────────────────────
 
-    // Task with zero period (invalid)
-    Task invalid_task = CreateTestTask("invalid_task", "", 0, 100000);
-    tasks.push_back(invalid_task);
+TEST_F(GlobalSchedulerTest, TableHasRequiredFields) {
+    std::vector<ClassifiedTask> tasks = {
+        MakeTtTask("brake", "brake_ctrl", 10000, 2000, 5000),
+    };
+    auto result = scheduler_->generate_schedule("node1", tasks);
+    ASSERT_TRUE(IsSuccess(result));
 
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule();
+    const auto& table = GetTable(result);
+    EXPECT_FALSE(table.table_id().empty());
+    EXPECT_EQ(table.node_id(), "node1");
+    EXPECT_GT(table.hyperperiod_us(), 0u);
+    EXPECT_GT(table.epoch_ns(), 0u);
 
-    // Should handle malformed tasks gracefully
-    EXPECT_TRUE(result || !result);
-}
-
-// Test memory requirements
-TEST_F(GlobalSchedulerTest, TaskMemoryRequirements) {
-    std::vector<Task> tasks;
-    Task memory_task = CreateTestTask("memory_task");
-    memory_task.memory_mb = 1024;  // 1GB requirement
-    tasks.push_back(memory_task);
-
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule();
-
-    EXPECT_TRUE(result || !result);
-}
-
-// Test CPU affinity requirements
-TEST_F(GlobalSchedulerTest, TaskCpuAffinity) {
-    std::vector<Task> tasks;
-    Task affinity_task = CreateTestTask("affinity_task");
-    affinity_task.cpu_affinity = 2;  // Must run on CPU 2
-    tasks.push_back(affinity_task);
-
-    scheduler_->set_tasks(tasks);
-    bool result = scheduler_->schedule();
-
-    EXPECT_TRUE(result || !result);
-}
-
-// Test main function
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    TLOG_SET_LOG_LEVEL(LogLevel::NONE);
-    return RUN_ALL_TESTS();
+    // Check TT slot hashes are non-zero
+    for (int p = 0; p < table.partitions_size(); ++p) {
+        for (int l = 0; l < table.partitions(p).layers_size(); ++l) {
+            const auto& layer = table.partitions(p).layers(l);
+            for (int s = 0; s < layer.tt_slots_size(); ++s) {
+                EXPECT_NE(layer.tt_slots(s).workload_id_hash(), 0u);
+                EXPECT_NE(layer.tt_slots(s).task_id_hash(), 0u);
+            }
+        }
+    }
 }

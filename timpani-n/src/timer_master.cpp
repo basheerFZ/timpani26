@@ -149,6 +149,31 @@ void TimerMaster::stop()
     }
 }
 
+uint64_t TimerMaster::compute_next_tt_start_ns(
+    size_t current_slot_idx, uint64_t current_hyperperiod_start) const
+{
+    if (slot_table_.empty() || hyperperiod_ns_ == 0) return 0;
+
+    const uint32_t current_cpu = slot_table_[current_slot_idx].cpu;
+
+    for (size_t step = 1; step <= slot_table_.size(); ++step) {
+        const size_t candidate_idx =
+            (current_slot_idx + step) % slot_table_.size();
+        const auto& candidate = slot_table_[candidate_idx];
+        if (candidate.cpu != current_cpu) continue;
+
+        uint64_t candidate_hyperperiod_start = current_hyperperiod_start;
+        if (candidate_idx <= current_slot_idx) {
+            candidate_hyperperiod_start += hyperperiod_ns_;
+        }
+
+        return candidate_hyperperiod_start + candidate.offset_ns;
+    }
+
+    return current_hyperperiod_start + hyperperiod_ns_ +
+           slot_table_[current_slot_idx].offset_ns;
+}
+
 void TimerMaster::thread_loop()
 {
     struct sched_param param = {};
@@ -210,6 +235,18 @@ void TimerMaster::thread_loop()
             // C3: Update current slot map for deadline miss detection in
             // stopping()
             bpf_loader_.update_current_slot(slot.cpu, slot.slot_idx);
+
+            struct timespec mono_ts;
+            clock_gettime(CLOCK_MONOTONIC, &mono_ts);
+            uint64_t now_mono_ns =
+                (uint64_t)mono_ts.tv_sec * 1000000000ULL + mono_ts.tv_nsec;
+            uint64_t next_tt_realtime_ns = compute_next_tt_start_ns(
+                next_slot_idx, current_hyperperiod_start);
+            if (next_tt_realtime_ns > target_ns) {
+                uint64_t next_delta_ns = next_tt_realtime_ns - target_ns;
+                bpf_loader_.update_next_tt_start(slot.cpu,
+                                                 now_mono_ns + next_delta_ns);
+            }
 
             jitters.push_back(jitter);
 

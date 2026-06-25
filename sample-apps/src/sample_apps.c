@@ -417,7 +417,8 @@ static void do_calculations(int loop_count)
             stress_cpu_fibonacci();
         }
     } else if (algo == ALGO_BUSY) {
-        stress_cpu_busyloop(loop_count);
+        //stress_cpu_busyloop(loop_count);
+        stress_cpu_busyloop(task_config.runtime_us * 95 / 100);
     } else if (algo == ALGO_MATRIX) {
         for (int i = 0; i < loop_count; i++) {
             stress_cpu_matrix(32 + i * 4);  // Progressive matrix size
