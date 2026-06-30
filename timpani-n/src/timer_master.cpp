@@ -100,6 +100,15 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
         ttsched_shm_->magic = 0;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
+        /* Wake all tasks currently waiting on SHM slots so they notice magic == 0
+         * and re-initialize their slot indices when the new schedule table is published. */
+        for (uint32_t i = 0; i < TIMPANI_MAX_TASKS; ++i) {
+            __atomic_fetch_add(const_cast<uint32_t*>(&ttsched_shm_->tasks[i].counter),
+                               1u, __ATOMIC_SEQ_CST);
+            syscall(SYS_futex, const_cast<uint32_t*>(&ttsched_shm_->tasks[i].counter),
+                    FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
+        }
+
         task_hash_to_shm_idx_.clear();
         uint32_t shm_idx = 0;
 
@@ -188,7 +197,6 @@ void TimerMaster::remove_workload(uint64_t workload_id_hash)
         std::cout << "[TimerMaster] Removed slots for workload hash: 0x" 
                   << std::hex << workload_id_hash << std::dec << std::endl;
     }
-}
 }
 
 void TimerMaster::thread_loop()

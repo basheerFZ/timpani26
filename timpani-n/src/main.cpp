@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -43,8 +44,8 @@ void signal_handler(int /* signum */) { g_shutdown = 1; }
 #define SCHED_EXT 7
 #endif
 
-/* Minimal sched_attr layout for sched_setattr(2) */
-struct sched_attr {
+/* Minimal sched_attr layout for sched_setattr(2) to avoid naming collisions */
+struct timpani_sched_attr {
     uint32_t size;
     uint32_t sched_policy;
     uint64_t sched_flags;
@@ -66,7 +67,7 @@ struct sched_attr {
  */
 static int apply_sched_ext(pid_t pid)
 {
-    struct sched_attr attr = {};
+    struct timpani_sched_attr attr = {};
     attr.size        = sizeof(attr);
     attr.sched_policy = SCHED_EXT;
     if (syscall(SYS_sched_setattr, pid, &attr, 0) < 0) {
@@ -366,6 +367,8 @@ int main(int argc, char** argv)
         std::map<std::string, std::vector<pid_t>> workload_to_pids;
         std::map<std::string, std::vector<TtSlotKey>> workload_to_slots;
         std::map<std::string, uint64_t> workload_to_hash;
+        std::map<std::string, std::vector<uint64_t>> workload_to_cbs_keys;
+        std::map<uint64_t, std::string> workload_hash_to_id;
         std::mutex workload_map_mutex;
 
         // Connect callbacks
@@ -395,15 +398,24 @@ int main(int argc, char** argv)
         //   prioritized because it occurs immediately upon detection, while
         //   eviction requires a round-trip through Pullpiri.
         // ===================================================================
-        node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
+        node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_to_cbs_keys, &workload_hash_to_id, &workload_map_mutex,
                                            &fault_monitor](const auto& recovery_signal) {
             std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
                       << " action: " << recovery_signal.action() << std::endl;
             if (recovery_signal.action() == timpani::node::v1::RecoverySignal::ACTION_STOP) {
-                std::cout << "[main] Evicting workload " << recovery_signal.workload_id() << std::endl;
-                
                 std::lock_guard<std::mutex> lock(workload_map_mutex);
-                const std::string& wid = recovery_signal.workload_id();
+                std::string wid = recovery_signal.workload_id();
+                if (workload_to_pids.find(wid) == workload_to_pids.end()) {
+                    for (const auto& [hash_val, name_str] : workload_hash_to_id) {
+                        if (std::to_string(hash_val) == wid ||
+                            (wid.rfind("0x", 0) == 0 && std::stoull(wid, nullptr, 16) == hash_val)) {
+                            wid = name_str;
+                            std::cout << "[main] Resolved hashed recovery signal workload ID to '" << wid << "'" << std::endl;
+                            break;
+                        }
+                    }
+                }
+                std::cout << "[main] Evicting workload " << wid << std::endl;
 
                 auto pids_it = workload_to_pids.find(wid);
                 if (pids_it != workload_to_pids.end()) {
@@ -434,6 +446,15 @@ int main(int argc, char** argv)
                     timer_master.remove_workload(hash_it->second);
                     workload_to_hash.erase(hash_it);
                 }
+
+                auto cbs_it = workload_to_cbs_keys.find(wid);
+                if (cbs_it != workload_to_cbs_keys.end()) {
+                    for (const auto& key : cbs_it->second) {
+                        bpf_loader.delete_cbs_state(key);
+                        std::cout << "[main] Deleted CBS state [key=0x" << std::hex << key << std::dec << "] from BPF." << std::endl;
+                    }
+                    workload_to_cbs_keys.erase(cbs_it);
+                }
             }
         });
 
@@ -446,8 +467,15 @@ int main(int argc, char** argv)
         // by the recovery_callback above, triggered by Pullpiri's STOP signal.
         // Pullpiri owns the workload lifecycle; N does not know whether the
         // workload is still alive or already terminated.
-        fault_monitor.set_callback([&node_client](const auto& event, uint32_t current_dmiss) {
+        fault_monitor.set_callback([&node_client, &workload_hash_to_id, &workload_map_mutex](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
+            {
+                std::lock_guard<std::mutex> lock(workload_map_mutex);
+                auto it = workload_hash_to_id.find(event.workload_id_hash);
+                if (it != workload_hash_to_id.end()) {
+                    fault.set_workload_id(it->second);
+                }
+            }
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
             fault.set_fault_type(to_proto_fault_type(event.fault_type));
@@ -469,7 +497,7 @@ int main(int argc, char** argv)
         node_client.set_table_callback([&timer_master, &bpf_loader,
                                         &node_client,
                                         &runtime_options,
-                                        &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_map_mutex,
+                                        &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_to_cbs_keys, &workload_hash_to_id, &workload_map_mutex,
                                         &fault_monitor
 #ifdef CONFIG_TRACE_BPF_EVENT
                                         ,
@@ -482,10 +510,59 @@ int main(int argc, char** argv)
                       << " partitions=" << table.partitions_size() << std::endl;
 
             {
+                std::set<std::string> new_workloads;
+                for (const auto& partition : table.partitions()) {
+                    for (const auto& layer : partition.layers()) {
+                        for (const auto& tt_slot : layer.tt_slots()) {
+                            if (!tt_slot.workload_id().empty()) {
+                                new_workloads.insert(tt_slot.workload_id());
+                            }
+                        }
+                        for (const auto& cbs_entry : layer.cbs_entries()) {
+                            if (!cbs_entry.workload_id().empty()) {
+                                new_workloads.insert(cbs_entry.workload_id());
+                            }
+                        }
+                    }
+                }
+
                 std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                for (const auto& [wid, pids] : workload_to_pids) {
+                    if (new_workloads.find(wid) == new_workloads.end()) {
+                        std::cout << "[main] Workload '" << wid << "' removed from new schedule table. Evicting from Time-Triggered / CBS Execution Domain..." << std::endl;
+                        cpu_set_t full_mask;
+                        CPU_ZERO(&full_mask);
+                        for (int i = 0; i < CPU_SETSIZE; ++i) {
+                            CPU_SET(i, &full_mask);
+                        }
+                        for (pid_t pid : pids) {
+                            sched_setaffinity(pid, sizeof(full_mask), &full_mask);
+                            bpf_loader.delete_task_meta(pid);
+                            std::cout << "[main] Evicted PID " << pid << " from Time-Triggered / CBS Execution Domain." << std::endl;
+                        }
+                        auto hash_it = workload_to_hash.find(wid);
+                        if (hash_it != workload_to_hash.end()) {
+                            timer_master.remove_workload(hash_it->second);
+                        }
+                    }
+                }
+
+                for (const auto& [wid, slots] : workload_to_slots) {
+                    for (const auto& key : slots) {
+                        bpf_loader.delete_tt_slot(key);
+                    }
+                }
+                for (const auto& [wid, cbs_keys] : workload_to_cbs_keys) {
+                    for (const auto& key : cbs_keys) {
+                        bpf_loader.delete_cbs_state(key);
+                    }
+                }
+
                 workload_to_pids.clear();
                 workload_to_slots.clear();
                 workload_to_hash.clear();
+                workload_to_cbs_keys.clear();
+                workload_hash_to_id.clear();
             }
             // Reset FaultMonitor dmiss counters and limits for fresh table
             fault_monitor.clear_state();
@@ -641,6 +718,7 @@ int main(int argc, char** argv)
                             workload_to_pids[tt_slot.workload_id()].push_back(pid);
                             workload_to_slots[tt_slot.workload_id()].push_back(tt_key);
                             workload_to_hash[tt_slot.workload_id()] = tt_slot.workload_id_hash();
+                            workload_hash_to_id[tt_slot.workload_id_hash()] = tt_slot.workload_id();
                         }
 
                         // Collect current_limit for FaultMonitor threshold
@@ -741,6 +819,15 @@ int main(int argc, char** argv)
                                   << cbs_state.period_us << "us hash=0x"
                                   << std::hex << meta.task_id_hash << std::dec
                                   << std::endl;
+                        // Update workload tracking maps
+                        if (pid >= 0) {
+                            std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                            workload_to_pids[cbs_entry.workload_id()].push_back(pid);
+                            workload_to_cbs_keys[cbs_entry.workload_id()].push_back(cbs_key);
+                            workload_to_hash[cbs_entry.workload_id()] = cbs_entry.workload_id_hash();
+                            workload_hash_to_id[cbs_entry.workload_id_hash()] = cbs_entry.workload_id();
+                        }
+
                         // Collect current_limit for FaultMonitor threshold
                         if (cbs_entry.current_limit() > 0) {
                             const auto limit_key = std::make_pair(

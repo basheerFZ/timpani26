@@ -226,6 +226,11 @@ bool BpfLoader::delete_tt_slot(const TtSlotKey& key) {
     return bpf_map_delete_elem(bpf_map__fd(skel_->maps.tt_table_map), &key) == 0;
 }
 
+bool BpfLoader::delete_cbs_state(uint64_t hash) {
+    if (!skel_) return false;
+    return bpf_map_delete_elem(bpf_map__fd(skel_->maps.cbs_map), &hash) == 0;
+}
+
 bool BpfLoader::update_current_slot(uint32_t cpu, uint32_t slot_idx) {
     if (!skel_) return false;
     return bpf_map_update_elem(bpf_map__fd(skel_->maps.current_slot_map), &cpu, &slot_idx, BPF_ANY) == 0;
