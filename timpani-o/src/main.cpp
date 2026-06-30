@@ -19,17 +19,22 @@
 #include "node_config.h"
 #include "orchestrator_service.h"
 #include "schedinfo_service.h"
+#include "recovery_service.h"
 #include "tlog.h"
 
 bool RunSchedInfoServer(int port, std::unique_ptr<SchedInfoServer>& server,
-                        std::shared_ptr<NodeConfigManager> node_config_manager)
+                        std::shared_ptr<NodeConfigManager> node_config_manager,
+                        std::unique_ptr<RecoveryServiceImpl>& recovery_service)
 {
     server = std::make_unique<SchedInfoServer>(node_config_manager);
-    if (!server->Start(port)) {
+    recovery_service = std::make_unique<RecoveryServiceImpl>(server.get());
+    
+    std::vector<grpc::Service*> additional_services = {recovery_service.get()};
+    if (!server->Start(port, additional_services)) {
         TLOG_ERROR("Failed to start SchedInfoServer on port ", port);
         return false;
     }
-    TLOG_INFO("SchedInfoServer listening on port ", port);
+    TLOG_INFO("SchedInfoServer (with RecoveryService) listening on port ", port);
     return true;
 }
 
@@ -151,7 +156,8 @@ int main(int argc, char** argv)
     // Run the gRPC SchedInfoService server (with internal scheduling and node
     // config)
     std::unique_ptr<SchedInfoServer> sinfo_server;
-    if (!RunSchedInfoServer(sinfo_port, sinfo_server, node_config_manager)) {
+    std::unique_ptr<RecoveryServiceImpl> recovery_service;
+    if (!RunSchedInfoServer(sinfo_port, sinfo_server, node_config_manager, recovery_service)) {
         return EXIT_FAILURE;
     }
 
@@ -176,6 +182,8 @@ int main(int argc, char** argv)
     std::unordered_map<std::string, int> replay_failures;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point>
         next_retry_time;
+    std::unordered_map<std::string, timpani::node::v1::HierarchicalScheduleTable>
+        last_pushed_tables;
     const auto kRetryBaseDelay = std::chrono::milliseconds(500);
     const auto kRetryMaxDelay = std::chrono::seconds(8);
     constexpr int kRetryBackoffMaxShift = 4;
@@ -197,6 +205,7 @@ int main(int argc, char** argv)
                 synced_nodes.erase(node_id);
                 replay_failures.erase(node_id);
                 next_retry_time.erase(node_id);
+                last_pushed_tables.erase(node_id);
             }
         }
 
@@ -207,6 +216,7 @@ int main(int argc, char** argv)
                 synced_nodes.erase(node_id);
                 replay_failures.erase(node_id);
                 next_retry_time.erase(node_id);
+                last_pushed_tables.erase(node_id);
                 TLOG_INFO("Node connected/reconnected - schedule replay queued for '",
                           node_id, "'");
             }
@@ -214,14 +224,53 @@ int main(int argc, char** argv)
         known_connected_nodes = connected_nodes;
 
         if (changed) {
-            replay_pending = true;
-            synced_nodes.clear();
-            replay_failures.clear();
-            next_retry_time.clear();
             if (sched_tables.empty()) {
                 TLOG_WARN("SchedInfo marked changed but map is empty");
+                replay_pending = true;
+                synced_nodes.clear();
+                replay_failures.clear();
+                next_retry_time.clear();
+                last_pushed_tables.clear();
             } else {
-                TLOG_INFO("SchedInfo changed - replay queued for all connected nodes");
+                int changed_count = 0;
+                for (const auto& node_id : connected_nodes) {
+                    auto it = sched_tables.find(node_id);
+                    timpani::node::v1::HierarchicalScheduleTable new_table;
+                    if (it != sched_tables.end()) {
+                        new_table = it->second;
+                    } else {
+                        new_table.set_table_id("table_v1");
+                        new_table.set_node_id(node_id);
+                        new_table.set_hyperperiod_us(10000);
+                    }
+
+                    auto last_it = last_pushed_tables.find(node_id);
+                    bool node_table_changed = true;
+                    if (last_it != last_pushed_tables.end()) {
+                        auto copy_new = new_table;
+                        copy_new.set_epoch_ns(0);
+                        auto copy_old = last_it->second;
+                        copy_old.set_epoch_ns(0);
+                        if (copy_new.SerializeAsString() == copy_old.SerializeAsString()) {
+                            node_table_changed = false;
+                        }
+                    }
+
+                    if (node_table_changed) {
+                        synced_nodes.erase(node_id);
+                        replay_failures.erase(node_id);
+                        next_retry_time.erase(node_id);
+                        changed_count++;
+                        TLOG_INFO("Schedule table changed for node '", node_id, "' - replay queued");
+                    }
+                }
+                if (changed_count > 0) {
+                    replay_pending = true;
+                    TLOG_INFO("SchedInfo changed - replay queued for ", changed_count,
+                              " / ", connected_nodes.size(), " connected node(s)");
+                } else {
+                    TLOG_INFO("SchedInfo changed but tables identical for all connected nodes - skipping replay");
+                }
             }
             sinfo_server->DumpSchedInfo();
         }
@@ -249,14 +298,21 @@ int main(int argc, char** argv)
 
                     // Look up the combined table for this node
                     auto it = sched_tables.find(node_id);
-                    if (it == sched_tables.end()) {
-                        TLOG_DEBUG("No schedule table for node '", node_id, "' — skipping");
-                        synced_nodes.insert(node_id);
-                        continue;
+                    timpani::node::v1::HierarchicalScheduleTable table_to_push;
+                    if (it != sched_tables.end()) {
+                        table_to_push = it->second;
+                    } else {
+                        TLOG_INFO("No schedule table for node '", node_id, "' — generating empty table for cleanup/sync");
+                        table_to_push.set_table_id("table_v1");
+                        table_to_push.set_node_id(node_id);
+                        table_to_push.set_hyperperiod_us(10000);
+                        auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count();
+                        table_to_push.set_epoch_ns(static_cast<uint64_t>(now_ns));
                     }
 
                     TLOG_INFO("Replaying schedule table for node '", node_id, "'");
-                    bool ok = g_orchestrator_service->push_full_table(node_id, it->second);
+                    bool ok = g_orchestrator_service->push_full_table(node_id, table_to_push);
                     TLOG_INFO("push_full_table(\"", node_id, "\") => ",
                               ok ? "OK" : "FAILED");
 
@@ -264,6 +320,7 @@ int main(int argc, char** argv)
                         synced_nodes.insert(node_id);
                         replay_failures.erase(node_id);
                         next_retry_time.erase(node_id);
+                        last_pushed_tables[node_id] = table_to_push;
                     } else {
                         all_push_ok = false;
                         synced_nodes.erase(node_id);

@@ -34,8 +34,9 @@ ScheduleResult GlobalScheduler::generate_schedule(
     const std::vector<ClassifiedTask>& tasks)
 {
     if (tasks.empty()) {
-        return InfeasibleError(InfeasibleReason::UtilizationExceeded, -1, "",
-                               "No tasks provided");
+        TLOG_INFO("=== GlobalScheduler: generating empty schedule for node '",
+                  node_id, "' (0 tasks) ===");
+        return build_table(node_id, {}, 10000);
     }
 
     TLOG_INFO("=== GlobalScheduler: generating schedule for node '",

@@ -9,6 +9,7 @@ add_executable(timpani-o
   node_config.cpp
   global_scheduler.cpp
   orchestrator_service.cpp
+  recovery_service.cpp
 )
 
 target_link_libraries(timpani-o

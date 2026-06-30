@@ -8,9 +8,6 @@
 
 #include "tlog.h"
 #include "schedinfo_service.h"
-#include "orchestrator_service.h"
-
-extern std::unique_ptr<timpani::orchestrator::OrchestratorServiceImpl> g_orchestrator_service;
 
 // ---------------------------------------------------------------------------
 // SchedInfoServiceImpl
@@ -143,10 +140,14 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
 
 bool SchedInfoServiceImpl::RegenerateAllSchedules(std::string& error_detail)
 {
-    // Collect all target nodes across all workloads
+    // Collect all target nodes across all workloads, plus any previously scheduled nodes
+    // so nodes with 0 remaining tasks receive an empty table.
     std::set<std::string> all_nodes;
     for (const auto& [wl_id, entry] : workload_tasks_) {
         all_nodes.insert(entry.target_nodes.begin(), entry.target_nodes.end());
+    }
+    for (const auto& [node_id, table] : schedule_tables_) {
+        all_nodes.insert(node_id);
     }
 
     ScheduleTableMap new_tables;
@@ -160,8 +161,6 @@ bool SchedInfoServiceImpl::RegenerateAllSchedules(std::string& error_detail)
                                  entry.tasks.begin(), entry.tasks.end());
             }
         }
-
-        if (all_tasks.empty()) continue;
 
         auto result = global_scheduler_->generate_schedule(node_id, all_tasks);
 
@@ -241,7 +240,7 @@ SchedInfoServer::SchedInfoServer(std::shared_ptr<NodeConfigManager> node_config_
 
 SchedInfoServer::~SchedInfoServer() { Stop(); }
 
-bool SchedInfoServer::Start(int port)
+bool SchedInfoServer::Start(int port, std::vector<grpc::Service*> additional_services)
 {
     std::string server_addr = "0.0.0.0:" + std::to_string(port);
 
@@ -249,6 +248,9 @@ bool SchedInfoServer::Start(int port)
     builder.AddListeningPort(server_addr, grpc::InsecureServerCredentials());
     builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);
     builder.RegisterService(&service_);
+    for (auto* s : additional_services) {
+        if (s) builder.RegisterService(s);
+    }
 
     server_ = builder.BuildAndStart();
     if (!server_) {
@@ -325,51 +327,41 @@ void SchedInfoServer::DumpSchedInfo()
     }
 }
 
-Status SchedInfoServiceImpl::EnforceRecoveryPolicy(ServerContext* context,
-                                                   const schedinfo::v1::RecoveryCommand* request,
-                                                   Response* reply)
+bool SchedInfoServiceImpl::RemoveWorkload(const std::string& workload_id, std::string* resolved_id)
 {
-    TLOG_INFO("Received RecoveryCommand: workload '", request->workload_id(),
-              "' policy: ", schedinfo::v1::RecoveryPolicy_Name(request->recovery_policy()));
-
-    if (request->recovery_policy() == schedinfo::v1::RecoveryPolicy::RECOVERY_STOP) {
-        TLOG_INFO("RecoveryPolicy is STOP for workload '", request->workload_id(), "'. Broadcasting RecoverySignal.");
-
-        {
-            std::unique_lock<std::shared_mutex> lock(schedule_mutex_);
-            auto existing_it = workload_tasks_.find(request->workload_id());
-            if (existing_it != workload_tasks_.end()) {
-                workload_tasks_.erase(existing_it);
-                
-                std::string error_detail;
-                if (!RegenerateAllSchedules(error_detail)) {
-                    TLOG_ERROR("Failed to regenerate schedules after removing workload '", request->workload_id(), "': ", error_detail);
-                } else {
-                    schedule_changed_ = true;
-                    TLOG_INFO("Removed workload '", request->workload_id(), "' from local schedule state due to STOP policy.");
-                }
-            } else {
-                TLOG_WARN("STOP policy received for unknown workload '", request->workload_id(), "'.");
+    std::unique_lock<std::shared_mutex> lock(schedule_mutex_);
+    auto existing_it = workload_tasks_.find(workload_id);
+    if (existing_it == workload_tasks_.end()) {
+        for (auto it = workload_tasks_.begin(); it != workload_tasks_.end(); ++it) {
+            uint64_t h = GlobalScheduler::fnv1a_hash(it->first.c_str());
+            if (std::to_string(h) == workload_id ||
+                (workload_id.rfind("0x", 0) == 0 && std::stoull(workload_id, nullptr, 16) == h)) {
+                existing_it = it;
+                TLOG_INFO("Resolved hashed workload_id '", workload_id, "' to actual name '", existing_it->first, "'");
+                break;
             }
-        }
-
-        bool broadcast_ok = false;
-        if (g_orchestrator_service) {
-            broadcast_ok = g_orchestrator_service->broadcast_recovery_signal(
-                request->workload_id(),
-                timpani::node::v1::RecoverySignal::ACTION_STOP);
-        } else {
-            TLOG_ERROR("OrchestratorService is not initialized. Cannot broadcast STOP RecoverySignal.");
-        }
-
-        if (!broadcast_ok) {
-            TLOG_WARN("Broadcast RecoverySignal(ACTION_STOP) reported failure for workload '",
-                      request->workload_id(), "'.");
-            reply->set_status(-1);
-            return Status::OK;
         }
     }
 
-    reply->set_status(0);
-    return Status::OK;
+    if (existing_it != workload_tasks_.end()) {
+        if (resolved_id) {
+            *resolved_id = existing_it->first;
+        }
+        std::string actual_id = existing_it->first;
+        workload_tasks_.erase(existing_it);
+        
+        std::string error_detail;
+        if (!RegenerateAllSchedules(error_detail)) {
+            TLOG_ERROR("Failed to regenerate schedules after removing workload '", actual_id, "': ", error_detail);
+            return false;
+        } else {
+            schedule_changed_ = true;
+            TLOG_INFO("Removed workload '", actual_id, "' from local schedule state due to STOP policy.");
+            return true;
+        }
+    } else {
+        TLOG_WARN("STOP policy received for unknown workload '", workload_id, "'.");
+        return false;
+    }
 }
+

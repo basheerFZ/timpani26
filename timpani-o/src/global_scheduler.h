@@ -179,6 +179,7 @@ public:
     static constexpr double U_OVERHEAD  = 0.02;   // Timer Master + BPF dispatch
     static constexpr double U_BOUND     = 0.80;   // Conservative utilization bound (DDR-004 §5)
     static constexpr uint32_t CBS_MIN_EXEC_US = 100; // Minimum usable gap (μs)
+    static uint64_t fnv1a_hash(const char* s);
 
 private:
     // ── Step 2: CPU assignment ──
@@ -218,7 +219,6 @@ private:
     static uint64_t lcm(uint64_t a, uint64_t b);
     static uint64_t calculate_hyperperiod(const std::vector<uint64_t>& periods);
     static bool     validate_harmonic(const std::vector<uint64_t>& periods);
-    static uint64_t fnv1a_hash(const char* s);
 
     std::shared_ptr<NodeConfigManager> node_config_manager_;
 };
