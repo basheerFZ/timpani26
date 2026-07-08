@@ -586,8 +586,26 @@ int main(int argc, char** argv)
 
             // Build SlotEntry list from TtSlots
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
-            // Collect per-task current_limit for FaultMonitor threshold checks
+            // Pre-pass: Collect per-task current_limit for FaultMonitor threshold checks
+            // This MUST be done before applying BPF/SCHED_EXT to prevent a race condition
+            // where a task immediately faults but FaultMonitor hasn't received the limits yet.
             std::map<std::pair<uint64_t, uint64_t>, uint32_t> new_limits;
+            for (const auto& partition : table.partitions()) {
+                for (const auto& layer : partition.layers()) {
+                    for (const auto& tt_slot : layer.tt_slots()) {
+                        if (tt_slot.current_limit() > 0) {
+                            new_limits[{tt_slot.workload_id_hash(), tt_slot.task_id_hash()}] = tt_slot.current_limit();
+                        }
+                    }
+                    for (const auto& cbs_entry : layer.cbs_entries()) {
+                        if (cbs_entry.current_limit() > 0) {
+                            new_limits[{cbs_entry.workload_id_hash(), cbs_entry.task_id_hash()}] = cbs_entry.current_limit();
+                        }
+                    }
+                }
+            }
+            fault_monitor.update_current_limits(new_limits);
+
             uint32_t slot_idx = 0;
             bool apply_success = true;
             std::string apply_error;
@@ -721,13 +739,7 @@ int main(int argc, char** argv)
                             workload_hash_to_id[tt_slot.workload_id_hash()] = tt_slot.workload_id();
                         }
 
-                        // Collect current_limit for FaultMonitor threshold
-                        if (tt_slot.current_limit() > 0) {
-                            const auto limit_key = std::make_pair(
-                                tt_slot.workload_id_hash(),
-                                tt_slot.task_id_hash());
-                            new_limits[limit_key] = tt_slot.current_limit();
-                        }
+
 
                         slot_idx++;
                     }
@@ -828,19 +840,10 @@ int main(int argc, char** argv)
                             workload_hash_to_id[cbs_entry.workload_id_hash()] = cbs_entry.workload_id();
                         }
 
-                        // Collect current_limit for FaultMonitor threshold
-                        if (cbs_entry.current_limit() > 0) {
-                            const auto limit_key = std::make_pair(
-                                cbs_entry.workload_id_hash(),
-                                cbs_entry.task_id_hash());
-                            new_limits[limit_key] = cbs_entry.current_limit();
-                        }
+
                     }
                 }
             }
-
-            // Push collected limits to FaultMonitor for threshold-based filtering
-            fault_monitor.update_current_limits(new_limits);
 
             uint64_t hyperperiod_us = table.hyperperiod_us();
             uint64_t epoch_ns = table.epoch_ns();
