@@ -327,7 +327,7 @@ void SchedInfoServer::DumpSchedInfo()
     }
 }
 
-bool SchedInfoServiceImpl::RemoveWorkload(const std::string& workload_id, std::string* resolved_id)
+bool SchedInfoServiceImpl::RemoveWorkload(const std::string& workload_id, std::string* resolved_id, bool trigger_push)
 {
     std::unique_lock<std::shared_mutex> lock(schedule_mutex_);
     auto existing_it = workload_tasks_.find(workload_id);
@@ -355,8 +355,10 @@ bool SchedInfoServiceImpl::RemoveWorkload(const std::string& workload_id, std::s
             TLOG_ERROR("Failed to regenerate schedules after removing workload '", actual_id, "': ", error_detail);
             return false;
         } else {
-            schedule_changed_ = true;
-            TLOG_INFO("Removed workload '", actual_id, "' from local schedule state due to STOP policy.");
+            if (trigger_push) {
+                schedule_changed_ = true;
+            }
+            TLOG_INFO("Removed workload '", actual_id, "' from local schedule state due to STOP policy. trigger_push=", trigger_push);
             return true;
         }
     } else {

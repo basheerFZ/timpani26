@@ -26,7 +26,7 @@ Status RecoveryServiceImpl::EnforceRecoveryPolicy(ServerContext* context,
 
         std::string actual_wid = request->workload_id();
         if (schedinfo_server_) {
-            if (!schedinfo_server_->RemoveWorkload(request->workload_id(), &actual_wid)) {
+            if (!schedinfo_server_->RemoveWorkload(request->workload_id(), &actual_wid, false)) {
                 TLOG_WARN("Failed to remove workload '", request->workload_id(), "' from schedule.");
             }
         } else {
