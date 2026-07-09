@@ -240,11 +240,20 @@ void TimerMaster::thread_loop()
 
         size_t next_slot_idx = 0;
         uint64_t current_hyperperiod_start = active_epoch_ns;
+        struct timespec now_ts;
+        clock_gettime(CLOCK_REALTIME, &now_ts);
+        uint64_t now_ns =
+            (uint64_t)now_ts.tv_sec * 1000000000ULL + now_ts.tv_nsec;
+
         if (active_epoch_ns == 0) {
-            struct timespec now;
-            clock_gettime(CLOCK_REALTIME, &now);
+            current_hyperperiod_start = now_ns;
+        } else if (active_epoch_ns < now_ns) {
+            uint64_t elapsed_ns = now_ns - active_epoch_ns;
+            uint64_t periods = (elapsed_ns / active_hyperperiod_ns) + 1;
             current_hyperperiod_start =
-                (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+                active_epoch_ns + periods * active_hyperperiod_ns;
+            std::cout << "[TimerMaster] Catch-up applied: jumped " << periods
+                      << " periods into the future." << std::endl;
         }
         std::cout << "[TimerMaster] Hyperperiod start time set: "
                   << (current_hyperperiod_start / 1000ULL) << " us"
