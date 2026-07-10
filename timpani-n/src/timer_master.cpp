@@ -17,6 +17,7 @@
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 
 namespace timpani {
@@ -43,9 +44,10 @@ TimerMaster::TimerMaster(BpfLoader& bpf_loader)
             ttsched_shm_ = nullptr;
             std::cerr << "[TimerMaster] shm mmap failed" << std::endl;
         } else {
-            /* Initialize: magic=0 (not ready), n_tasks=0 */
+            /* Initialize: magic=0 (not ready), n_tasks=0, generation=1 */
             ttsched_shm_->magic = 0;
             ttsched_shm_->n_tasks = 0;
+            ttsched_shm_->generation = 1;
             std::cout << "[TimerMaster] shm /timpani_ttsched created"
                       << std::endl;
         }
@@ -109,8 +111,7 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
                     FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
         }
 
-        std::unordered_map<uint64_t, uint32_t> prev_mapping =
-            task_hash_to_shm_idx_;
+        std::map<uint64_t, int> prev_mapping = task_hash_to_shm_idx_;
         task_hash_to_shm_idx_.clear();
 
         std::vector<bool> used_slots(TIMPANI_MAX_TASKS, false);
@@ -163,14 +164,17 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
                       << std::endl;
         }
 
-        /* Publish atomically: first n_tasks, then magic */
+        /* Publish atomically: first n_tasks and generation, then magic */
         __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->n_tasks),
                          total_slots, __ATOMIC_RELEASE);
+        __atomic_fetch_add(const_cast<uint32_t*>(&ttsched_shm_->generation),
+                           1u, __ATOMIC_RELEASE);
         __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->magic),
                          TIMPANI_TTSCHED_MAGIC, __ATOMIC_RELEASE);
 
-        std::cout << "[TimerMaster] SHM published: " << shm_idx
-                  << " task slots ready" << std::endl;
+        std::cout << "[TimerMaster] SHM published: " << total_slots
+                  << " task slots ready (gen=" << ttsched_shm_->generation
+                  << ")" << std::endl;
     }
 
     table_pending_ = true;  // signal idle loop to restart

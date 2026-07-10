@@ -32,6 +32,8 @@ struct timpani_ttsched_shm {
     uint32_t
         magic; /* TIMPANI_TTSCHED_MAGIC when schedule is ready, 0 otherwise */
     uint32_t n_tasks; /* number of active task slots (atomic RELEASE write) */
+    uint32_t generation; /* monotonically incremented on schedule update */
+    uint32_t _pad;
     struct timpani_task_slot tasks[TIMPANI_MAX_TASKS];
 };
 
