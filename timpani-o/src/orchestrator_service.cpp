@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "orchestrator_service.h"
+#include "fault_client.h"
 #include <iostream>
 
 namespace timpani {
@@ -59,7 +60,50 @@ void OrchestratorServiceImpl::handle_node_status(const NodeStatus& status, Conne
 
 void OrchestratorServiceImpl::handle_fault_info(const FaultInfo& fault, ConnectedNode& node) {
     std::cerr << "[Orchestrator] Fault from " << node.node_id 
-              << " task=" << fault.task_id() << " type=" << fault.fault_type() << std::endl;
+              << " task=" << fault.task_id() << " type=" << fault.fault_type()
+              << " dmiss_count=" << fault.dmiss_count()
+              << " current_limit=" << fault.current_limit() << std::endl;
+
+    std::string workload_id = fault.workload_id();
+    if (workload_id.empty()) {
+        workload_id = std::to_string(fault.workload_id_hash());
+    }
+    
+    std::string task_id = fault.task_id();
+    if (task_id.empty()) {
+        task_id = std::to_string(fault.task_id_hash());
+    }
+    
+    schedinfo::v1::FaultType proto_fault_type;
+    switch(fault.fault_type()) {
+        case timpani::node::v1::FaultType::DMISS:
+            proto_fault_type = schedinfo::v1::FaultType::DMISS;
+            break;
+        default:
+            proto_fault_type = schedinfo::v1::FaultType::UNKNOWN;
+            break;
+    }
+
+    if (fault.current_limit() > 0 && fault.dmiss_count() >= fault.current_limit()) {
+        std::cerr << "[Orchestrator] DMISS limit reached: workload=" << workload_id
+                  << " task=" << task_id
+                  << " dmiss_count=" << fault.dmiss_count()
+                  << " current_limit=" << fault.current_limit() << std::endl;
+    }
+
+    bool forwarded = FaultServiceClient::GetInstance().NotifyFault(
+        workload_id,
+        node.node_id,
+        task_id,
+        proto_fault_type,
+        fault.dmiss_count()
+    );
+
+    if (!forwarded) {
+        std::cerr << "[Orchestrator] Fault forwarding failed (queued for retry if enabled): "
+                  << "workload=" << workload_id << " task=" << task_id
+                  << std::endl;
+    }
 }
 
 void OrchestratorServiceImpl::handle_table_applied(const TableApplied& applied, ConnectedNode& node) {
@@ -113,6 +157,24 @@ std::vector<std::string> OrchestratorServiceImpl::get_connected_node_ids() {
         ids.push_back(pair.first);
     }
     return ids;
+}
+
+bool OrchestratorServiceImpl::broadcast_recovery_signal(const std::string& workload_id, RecoverySignal::Action action) {
+    std::lock_guard<std::mutex> lock(nodes_mutex_);
+    bool all_success = true;
+    for (auto& pair : connected_nodes_) {
+        ControlCommand cmd;
+        RecoverySignal* rec_sig = cmd.mutable_recovery();
+        rec_sig->set_workload_id(workload_id);
+        rec_sig->set_action(action);
+        
+        auto& target_node = pair.second;
+        std::lock_guard<std::mutex> stream_lock(target_node->write_mutex);
+        if (!target_node->stream->Write(cmd)) {
+            all_success = false;
+        }
+    }
+    return all_success;
 }
 
 } // namespace orchestrator

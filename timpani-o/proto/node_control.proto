@@ -54,9 +54,19 @@ message FaultInfo {
   string    node_id      = 3;
   FaultType fault_type   = 4;
   uint64    timestamp_ns = 5;
+  // DEBUG/VERIFICATION ONLY (0612 meeting agreement).
+  // Cumulative deadline miss count for this task in Timpani-N.
+  // Sent alongside fault events for pipeline verification.
+  // Do NOT use for policy decisions — threshold checks are
+  // performed internally by FaultMonitor before sending.
   uint32    dmiss_count  = 6;
   uint64    workload_id_hash = 7;
   uint64    task_id_hash = 8;
+  // Propagated from Pullpiri's max_dmiss via the schedule table:
+  //   Pullpiri max_dmiss → Timpani-O TtSlot.current_limit → Timpani-N
+  // Included for debug/verification to confirm the threshold value
+  // that triggered this fault report.
+  uint32    current_limit = 9;
 }
 
 message TableApplied {
@@ -71,7 +81,17 @@ message ControlCommand {
     HierarchicalScheduleTable full_table   = 1;
     ScheduleTableUpdate       update       = 2;
     ShutdownCommand           shutdown     = 3;
+    RecoverySignal            recovery     = 4;
   }
+}
+
+message RecoverySignal {
+  string workload_id = 1;
+  enum Action {
+    ACTION_STOP = 0;
+    ACTION_RESTART = 1;
+  }
+  Action action = 2;
 }
 
 message ScheduleTableUpdate {
@@ -141,6 +161,7 @@ message TtSlot {
   uint32 cpu = 6;
   uint64 workload_id_hash = 7;
   uint64 task_id_hash = 8;
+  uint32 current_limit = 9;
 }
 
 message CbsConfig {
@@ -151,4 +172,5 @@ message CbsConfig {
   uint32 deadline_us = 5;
   uint64 workload_id_hash = 6;
   uint64 task_id_hash = 7;
+  uint32 current_limit = 8;
 }

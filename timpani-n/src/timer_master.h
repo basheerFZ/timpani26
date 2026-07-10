@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +30,7 @@ class TimerMaster
         uint64_t    offset_ns;
         uint64_t    duration_ns;
         uint64_t    task_id_hash;
+        uint64_t    workload_id_hash;
         std::string task_name;   /* task comm name — used for targeted wake */
     };
 
@@ -40,6 +42,8 @@ class TimerMaster
 
     void start();
     void stop();
+
+    void remove_workload(uint64_t workload_id_hash);
 
   private:
     void thread_loop();
@@ -62,6 +66,7 @@ class TimerMaster
     std::vector<SlotEntry> slot_table_;
     uint64_t hyperperiod_ns_;
     uint64_t epoch_ns_;
+    std::mutex schedule_mutex_;
 };
 
 }  // namespace node

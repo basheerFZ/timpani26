@@ -26,6 +26,7 @@ public:
 
     bool push_full_table(const std::string& node_id, const HierarchicalScheduleTable& table);
     bool push_update(const std::string& node_id, const ScheduleTableUpdate& update);
+    bool broadcast_recovery_signal(const std::string& workload_id, RecoverySignal::Action action);
     std::vector<std::string> get_connected_node_ids();
 
 private:

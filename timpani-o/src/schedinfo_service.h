@@ -36,12 +36,20 @@ class SchedInfoServiceImpl final : public SchedInfoService::Service
                         Response* reply) override;
 
     /**
+     * @brief Remove a workload from the schedule and regenerate.
+     * @param workload_id The ID of the workload to remove.
+     * @return true if workload was found and removed, false otherwise.
+     */
+    bool RemoveWorkload(const std::string& workload_id, std::string* resolved_id = nullptr, bool trigger_push = true);
+
+    /**
      * @brief Get all schedule tables (workload_id → node_id → table).
      * @param changed  If non-null, set to true if tables changed since last call.
      * @return Current schedule table map.
      */
     ScheduleTableMap GetScheduleTables(bool* changed = nullptr);
 
+    std::unique_ptr<RecoveryService::Service> recovery_service_;
   private:
     static int SchedPolicyToInt(SchedPolicy policy);
 
@@ -76,12 +84,15 @@ class SchedInfoServer
   public:
     explicit SchedInfoServer(std::shared_ptr<NodeConfigManager> node_config_manager = nullptr);
     ~SchedInfoServer();
-    bool Start(int port);
+    bool Start(int port, std::vector<grpc::Service*> additional_services = {});
     void Stop();
+
+    bool RemoveWorkload(const std::string& workload_id, std::string* resolved_id = nullptr, bool trigger_push = true) { return service_.RemoveWorkload(workload_id, resolved_id, trigger_push); }
 
     ScheduleTableMap GetScheduleTables(bool* changed = nullptr);
     void DumpSchedInfo();
 
+    std::unique_ptr<RecoveryService::Service> recovery_service_;
  private:
     SchedInfoServiceImpl service_;
     std::unique_ptr<Server> server_;

@@ -11,6 +11,7 @@
 
 #include <cctype>
 #include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -18,6 +19,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include "bpf_loader.h"
@@ -41,8 +44,8 @@ void signal_handler(int /* signum */) { g_shutdown = 1; }
 #define SCHED_EXT 7
 #endif
 
-/* Minimal sched_attr layout for sched_setattr(2) */
-struct sched_attr {
+/* Minimal sched_attr layout for sched_setattr(2) to avoid naming collisions */
+struct timpani_sched_attr {
     uint32_t size;
     uint32_t sched_policy;
     uint64_t sched_flags;
@@ -64,7 +67,7 @@ struct sched_attr {
  */
 static int apply_sched_ext(pid_t pid)
 {
-    struct sched_attr attr = {};
+    struct timpani_sched_attr attr = {};
     attr.size        = sizeof(attr);
     attr.sched_policy = SCHED_EXT;
     if (syscall(SYS_sched_setattr, pid, &attr, 0) < 0) {
@@ -187,6 +190,18 @@ uint64_t monotonic_now_ns()
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
+}
+
+timpani::node::v1::FaultType to_proto_fault_type(uint8_t bpf_fault_type)
+{
+    switch (bpf_fault_type) {
+        case FAULT_DMISS:
+            return timpani::node::v1::FaultType::DMISS;
+        case FAULT_BUDGET_EXCEED:
+            return timpani::node::v1::FaultType::BUDGET_EXCEED;
+        default:
+            return timpani::node::v1::FaultType::UNKNOWN;
+    }
 }
 }  // namespace
 
@@ -345,6 +360,17 @@ int main(int argc, char** argv)
         timpani::node::NodeClient node_client(orchestrator_endpoint,
                                               runtime_options.node_id_override);
 
+        // 5. Initialize Timer Master (Time-Triggered / CBS Execution Thread)
+        timpani::node::TimerMaster timer_master(bpf_loader);
+
+        // Workload tracking for Recovery Eviction
+        std::map<std::string, std::vector<pid_t>> workload_to_pids;
+        std::map<std::string, std::vector<TtSlotKey>> workload_to_slots;
+        std::map<std::string, uint64_t> workload_to_hash;
+        std::map<std::string, std::vector<uint64_t>> workload_to_cbs_keys;
+        std::map<uint64_t, std::string> workload_hash_to_id;
+        std::mutex workload_map_mutex;
+
         // Connect callbacks
         node_client.set_shutdown_callback([](uint32_t grace_period_ms) {
             std::cout << "[main] Received shutdown command: " << grace_period_ms
@@ -352,25 +378,127 @@ int main(int argc, char** argv)
             // Handle shutdown
         });
 
-        fault_monitor.set_callback([&node_client](const auto& event) {
+        // ===================================================================
+        // EVICTION PATH (sole path for workload removal from Time-Triggered / CBS Execution Domain)
+        // ===================================================================
+        // Design Decision (0612 Meeting):
+        //   Workload lifecycle is managed by Pullpiri. Timpani-N must NOT
+        //   self-evict workloads upon fault detection. Eviction is performed
+        //   ONLY when a STOP signal is received through this path:
+        //
+        //   [Fault Flow]
+        //     BPF fault → FaultMonitor (threshold check)
+        //       → callback → send_fault(N→O) → O forwards to Pullpiri
+        //
+        //   [Eviction Flow — the ONLY eviction path]
+        //     Pullpiri decides STOP → O relays RecoverySignal(ACTION_STOP)
+        //       → recovery_callback (this handler) → BPF cleanup + affinity reset
+        //
+        //   These two flows are on separate paths. Fault sending is inherently
+        //   prioritized because it occurs immediately upon detection, while
+        //   eviction requires a round-trip through Pullpiri.
+        // ===================================================================
+        node_client.set_recovery_callback([&timer_master, &bpf_loader, &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_to_cbs_keys, &workload_hash_to_id, &workload_map_mutex,
+                                           &fault_monitor](const auto& recovery_signal) {
+            std::cout << "[main] Received recovery signal for workload: " << recovery_signal.workload_id()
+                      << " action: " << recovery_signal.action() << std::endl;
+            if (recovery_signal.action() == timpani::node::v1::RecoverySignal::ACTION_STOP) {
+                std::lock_guard<std::mutex> lock(workload_map_mutex);
+                std::string wid = recovery_signal.workload_id();
+                if (workload_to_pids.find(wid) == workload_to_pids.end()) {
+                    for (const auto& [hash_val, name_str] : workload_hash_to_id) {
+                        if (std::to_string(hash_val) == wid ||
+                            (wid.rfind("0x", 0) == 0 && std::stoull(wid, nullptr, 16) == hash_val)) {
+                            wid = name_str;
+                            std::cout << "[main] Resolved hashed recovery signal workload ID to '" << wid << "'" << std::endl;
+                            break;
+                        }
+                    }
+                }
+                std::cout << "[main] Evicting workload " << wid << std::endl;
+
+                auto pids_it = workload_to_pids.find(wid);
+                if (pids_it != workload_to_pids.end()) {
+                    cpu_set_t full_mask;
+                    CPU_ZERO(&full_mask);
+                    for (int i = 0; i < CPU_SETSIZE; ++i) {
+                        CPU_SET(i, &full_mask);
+                    }
+                    for (pid_t pid : pids_it->second) {
+                        sched_setaffinity(pid, sizeof(full_mask), &full_mask);
+                        bpf_loader.delete_task_meta(pid);
+                        std::cout << "[main] Evicted PID " << pid << " from Time-Triggered / CBS Execution Domain." << std::endl;
+                    }
+                    workload_to_pids.erase(pids_it);
+                }
+
+                auto slots_it = workload_to_slots.find(wid);
+                if (slots_it != workload_to_slots.end()) {
+                    for (const auto& key : slots_it->second) {
+                        bpf_loader.delete_tt_slot(key);
+                        std::cout << "[main] Deleted TT slot [cpu=" << key.cpu << " idx=" << key.slot_idx << "] from BPF." << std::endl;
+                    }
+                    workload_to_slots.erase(slots_it);
+                }
+
+                auto hash_it = workload_to_hash.find(wid);
+                if (hash_it != workload_to_hash.end()) {
+                    timer_master.remove_workload(hash_it->second);
+                    workload_to_hash.erase(hash_it);
+                }
+
+                auto cbs_it = workload_to_cbs_keys.find(wid);
+                if (cbs_it != workload_to_cbs_keys.end()) {
+                    for (const auto& key : cbs_it->second) {
+                        bpf_loader.delete_cbs_state(key);
+                        std::cout << "[main] Deleted CBS state [key=0x" << std::hex << key << std::dec << "] from BPF." << std::endl;
+                    }
+                    workload_to_cbs_keys.erase(cbs_it);
+                }
+            }
+        });
+
+        // Fault callback: invoked only when a task's cumulative dmiss exceeds
+        // its current_limit (threshold filtering is done inside FaultMonitor).
+        //
+        // IMPORTANT: This callback must ONLY send the fault event to O.
+        // It must NOT perform any workload eviction (BPF cleanup, affinity
+        // reset, TimerMaster slot removal). Eviction is exclusively handled
+        // by the recovery_callback above, triggered by Pullpiri's STOP signal.
+        // Pullpiri owns the workload lifecycle; N does not know whether the
+        // workload is still alive or already terminated.
+        fault_monitor.set_callback([&node_client, &workload_hash_to_id, &workload_map_mutex](const auto& event, uint32_t current_dmiss) {
             timpani::node::v1::FaultInfo fault;
+            {
+                std::lock_guard<std::mutex> lock(workload_map_mutex);
+                auto it = workload_hash_to_id.find(event.workload_id_hash);
+                if (it != workload_hash_to_id.end()) {
+                    fault.set_workload_id(it->second);
+                }
+            }
             fault.set_workload_id_hash(event.workload_id_hash);
             fault.set_task_id_hash(event.task_id_hash);
-            fault.set_fault_type(
-                static_cast<timpani::node::v1::FaultType>(event.fault_type));
+            fault.set_fault_type(to_proto_fault_type(event.fault_type));
+            fault.set_dmiss_count(current_dmiss);
+            fault.set_current_limit(0);  // debug: limit info is in FaultMonitor logs
+
+            std::cout << "[main] Fault threshold exceeded! Forwarding fault to Timpani-O. "
+                      << "workload_hash=0x" << std::hex << event.workload_id_hash
+                      << " task_hash=0x" << event.task_id_hash << std::dec
+                      << " dmiss_count=" << current_dmiss << std::endl;
+
             node_client.send_fault(fault);
         });
 
         fault_monitor.start();
 
-        // 5. Initialize Timer Master (RT Priority Thread) last
-        timpani::node::TimerMaster timer_master(bpf_loader);
-
         // Wire table_callback: received HierarchicalScheduleTable → TimerMaster
         // slots (Re-set callback now that timer_master is in scope)
         node_client.set_table_callback([&timer_master, &bpf_loader,
-                        &node_client,
-                                        &runtime_options
+                                        &node_client,
+                                        &runtime_options,
+                                        &workload_to_pids, &workload_to_slots, &workload_to_hash, &workload_to_cbs_keys, &workload_hash_to_id, &workload_map_mutex,
+                                        &fault_monitor
 #ifdef CONFIG_TRACE_BPF_EVENT
                                         ,
                                         &schedstat_monitor, &gpdata_pid_to_task,
@@ -380,6 +508,64 @@ int main(int argc, char** argv)
             std::cout << "[main] Received table: " << table.table_id()
                       << " hyperperiod=" << table.hyperperiod_us() << "us"
                       << " partitions=" << table.partitions_size() << std::endl;
+
+            {
+                std::set<std::string> new_workloads;
+                for (const auto& partition : table.partitions()) {
+                    for (const auto& layer : partition.layers()) {
+                        for (const auto& tt_slot : layer.tt_slots()) {
+                            if (!tt_slot.workload_id().empty()) {
+                                new_workloads.insert(tt_slot.workload_id());
+                            }
+                        }
+                        for (const auto& cbs_entry : layer.cbs_entries()) {
+                            if (!cbs_entry.workload_id().empty()) {
+                                new_workloads.insert(cbs_entry.workload_id());
+                            }
+                        }
+                    }
+                }
+
+                std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                for (const auto& [wid, pids] : workload_to_pids) {
+                    if (new_workloads.find(wid) == new_workloads.end()) {
+                        std::cout << "[main] Workload '" << wid << "' removed from new schedule table. Evicting from Time-Triggered / CBS Execution Domain..." << std::endl;
+                        cpu_set_t full_mask;
+                        CPU_ZERO(&full_mask);
+                        for (int i = 0; i < CPU_SETSIZE; ++i) {
+                            CPU_SET(i, &full_mask);
+                        }
+                        for (pid_t pid : pids) {
+                            sched_setaffinity(pid, sizeof(full_mask), &full_mask);
+                            bpf_loader.delete_task_meta(pid);
+                            std::cout << "[main] Evicted PID " << pid << " from Time-Triggered / CBS Execution Domain." << std::endl;
+                        }
+                        auto hash_it = workload_to_hash.find(wid);
+                        if (hash_it != workload_to_hash.end()) {
+                            timer_master.remove_workload(hash_it->second);
+                        }
+                    }
+                }
+
+                for (const auto& [wid, slots] : workload_to_slots) {
+                    for (const auto& key : slots) {
+                        bpf_loader.delete_tt_slot(key);
+                    }
+                }
+                for (const auto& [wid, cbs_keys] : workload_to_cbs_keys) {
+                    for (const auto& key : cbs_keys) {
+                        bpf_loader.delete_cbs_state(key);
+                    }
+                }
+
+                workload_to_pids.clear();
+                workload_to_slots.clear();
+                workload_to_hash.clear();
+                workload_to_cbs_keys.clear();
+                workload_hash_to_id.clear();
+            }
+            // Reset FaultMonitor dmiss counters and limits for fresh table
+            fault_monitor.clear_state();
 
 #ifdef CONFIG_TRACE_BPF_EVENT
             if (runtime_options.enable_plot && schedstat_monitor.is_active()) {
@@ -400,6 +586,26 @@ int main(int argc, char** argv)
 
             // Build SlotEntry list from TtSlots
             std::vector<timpani::node::TimerMaster::SlotEntry> slots;
+            // Pre-pass: Collect per-task current_limit for FaultMonitor threshold checks
+            // This MUST be done before applying BPF/SCHED_EXT to prevent a race condition
+            // where a task immediately faults but FaultMonitor hasn't received the limits yet.
+            std::map<std::pair<uint64_t, uint64_t>, uint32_t> new_limits;
+            for (const auto& partition : table.partitions()) {
+                for (const auto& layer : partition.layers()) {
+                    for (const auto& tt_slot : layer.tt_slots()) {
+                        if (tt_slot.current_limit() > 0) {
+                            new_limits[{tt_slot.workload_id_hash(), tt_slot.task_id_hash()}] = tt_slot.current_limit();
+                        }
+                    }
+                    for (const auto& cbs_entry : layer.cbs_entries()) {
+                        if (cbs_entry.current_limit() > 0) {
+                            new_limits[{cbs_entry.workload_id_hash(), cbs_entry.task_id_hash()}] = cbs_entry.current_limit();
+                        }
+                    }
+                }
+            }
+            fault_monitor.update_current_limits(new_limits);
+
             uint32_t slot_idx = 0;
             bool apply_success = true;
             std::string apply_error;
@@ -505,6 +711,7 @@ int main(int argc, char** argv)
                         entry.task_id_hash = tt_slot.task_id_hash();
                         entry.task_name =
                             tt_slot.task_id(); /* comm name, e.g. "task_1" */
+                        entry.workload_id_hash = tt_slot.workload_id_hash();
                         slots.push_back(entry);
 
                         // Populate BPF tt_table_map so dispatch() can consume
@@ -522,6 +729,17 @@ int main(int argc, char** argv)
                             record_apply_error("TT slot update failed: " +
                                                tt_slot.task_id());
                         }
+
+                        // Update workload tracking maps
+                        if (pid >= 0) {
+                            std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                            workload_to_pids[tt_slot.workload_id()].push_back(pid);
+                            workload_to_slots[tt_slot.workload_id()].push_back(tt_key);
+                            workload_to_hash[tt_slot.workload_id()] = tt_slot.workload_id_hash();
+                            workload_hash_to_id[tt_slot.workload_id_hash()] = tt_slot.workload_id();
+                        }
+
+
 
                         slot_idx++;
                     }
@@ -613,6 +831,16 @@ int main(int argc, char** argv)
                                   << cbs_state.period_us << "us hash=0x"
                                   << std::hex << meta.task_id_hash << std::dec
                                   << std::endl;
+                        // Update workload tracking maps
+                        if (pid >= 0) {
+                            std::lock_guard<std::mutex> wl_lock(workload_map_mutex);
+                            workload_to_pids[cbs_entry.workload_id()].push_back(pid);
+                            workload_to_cbs_keys[cbs_entry.workload_id()].push_back(cbs_key);
+                            workload_to_hash[cbs_entry.workload_id()] = cbs_entry.workload_id_hash();
+                            workload_hash_to_id[cbs_entry.workload_id_hash()] = cbs_entry.workload_id();
+                        }
+
+
                     }
                 }
             }
@@ -627,8 +855,8 @@ int main(int argc, char** argv)
                                            apply_error);
         });
 
-        node_client.connect();
         timer_master.start();
+        node_client.connect();
 
         // Daemon simply waits for shutdown signal
         while (!g_shutdown) {

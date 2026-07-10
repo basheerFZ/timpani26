@@ -47,6 +47,10 @@ void NodeClient::set_shutdown_callback(ShutdownCallback cb)
 {
     shutdown_callback_ = std::move(cb);
 }
+void NodeClient::set_recovery_callback(RecoveryCallback cb)
+{
+    recovery_callback_ = std::move(cb);
+}
 
 void NodeClient::connect()
 {
@@ -90,6 +94,8 @@ void NodeClient::reconnect_loop()
                 update_callback_(command.update());
             } else if (command.has_shutdown() && shutdown_callback_) {
                 shutdown_callback_(command.shutdown().grace_period_ms());
+            } else if (command.has_recovery() && recovery_callback_) {
+                recovery_callback_(command.recovery());
             }
         }
         connected_ = false;

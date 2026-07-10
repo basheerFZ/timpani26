@@ -54,6 +54,8 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
         TLOG_DEBUG("  Node ID: ", task.node_id());
     }
 
+    // Schedule table generation logic remains below...
+
     // ── Step 1: Classify workload by TemporalClass (DDR-007 §3.2) ──
     Mechanism mechanism;
     switch (request->temporal_class()) {
@@ -138,10 +140,14 @@ Status SchedInfoServiceImpl::AddSchedInfo(ServerContext* context,
 
 bool SchedInfoServiceImpl::RegenerateAllSchedules(std::string& error_detail)
 {
-    // Collect all target nodes across all workloads
+    // Collect all target nodes across all workloads, plus any previously scheduled nodes
+    // so nodes with 0 remaining tasks receive an empty table.
     std::set<std::string> all_nodes;
     for (const auto& [wl_id, entry] : workload_tasks_) {
         all_nodes.insert(entry.target_nodes.begin(), entry.target_nodes.end());
+    }
+    for (const auto& [node_id, table] : schedule_tables_) {
+        all_nodes.insert(node_id);
     }
 
     ScheduleTableMap new_tables;
@@ -155,8 +161,6 @@ bool SchedInfoServiceImpl::RegenerateAllSchedules(std::string& error_detail)
                                  entry.tasks.begin(), entry.tasks.end());
             }
         }
-
-        if (all_tasks.empty()) continue;
 
         auto result = global_scheduler_->generate_schedule(node_id, all_tasks);
 
@@ -191,6 +195,7 @@ std::vector<ClassifiedTask> SchedInfoServiceImpl::ConvertToClassifiedTasks(
         ct.wcet_us     = static_cast<uint32_t>(grpc_task.runtime());
         ct.deadline_us = static_cast<uint32_t>(grpc_task.deadline());
         ct.assigned_cpu = -1;
+        ct.max_dmiss    = static_cast<uint32_t>(grpc_task.max_dmiss());
 
         // Use period as deadline if deadline is not set
         if (ct.deadline_us == 0 && ct.period_us > 0) {
@@ -235,7 +240,7 @@ SchedInfoServer::SchedInfoServer(std::shared_ptr<NodeConfigManager> node_config_
 
 SchedInfoServer::~SchedInfoServer() { Stop(); }
 
-bool SchedInfoServer::Start(int port)
+bool SchedInfoServer::Start(int port, std::vector<grpc::Service*> additional_services)
 {
     std::string server_addr = "0.0.0.0:" + std::to_string(port);
 
@@ -243,6 +248,9 @@ bool SchedInfoServer::Start(int port)
     builder.AddListeningPort(server_addr, grpc::InsecureServerCredentials());
     builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);
     builder.RegisterService(&service_);
+    for (auto* s : additional_services) {
+        if (s) builder.RegisterService(s);
+    }
 
     server_ = builder.BuildAndStart();
     if (!server_) {
@@ -318,3 +326,44 @@ void SchedInfoServer::DumpSchedInfo()
         }
     }
 }
+
+bool SchedInfoServiceImpl::RemoveWorkload(const std::string& workload_id, std::string* resolved_id, bool trigger_push)
+{
+    std::unique_lock<std::shared_mutex> lock(schedule_mutex_);
+    auto existing_it = workload_tasks_.find(workload_id);
+    if (existing_it == workload_tasks_.end()) {
+        for (auto it = workload_tasks_.begin(); it != workload_tasks_.end(); ++it) {
+            uint64_t h = GlobalScheduler::fnv1a_hash(it->first.c_str());
+            if (std::to_string(h) == workload_id ||
+                (workload_id.rfind("0x", 0) == 0 && std::stoull(workload_id, nullptr, 16) == h)) {
+                existing_it = it;
+                TLOG_INFO("Resolved hashed workload_id '", workload_id, "' to actual name '", existing_it->first, "'");
+                break;
+            }
+        }
+    }
+
+    if (existing_it != workload_tasks_.end()) {
+        if (resolved_id) {
+            *resolved_id = existing_it->first;
+        }
+        std::string actual_id = existing_it->first;
+        workload_tasks_.erase(existing_it);
+        
+        std::string error_detail;
+        if (!RegenerateAllSchedules(error_detail)) {
+            TLOG_ERROR("Failed to regenerate schedules after removing workload '", actual_id, "': ", error_detail);
+            return false;
+        } else {
+            if (trigger_push) {
+                schedule_changed_ = true;
+            }
+            TLOG_INFO("Removed workload '", actual_id, "' from local schedule state due to STOP policy. trigger_push=", trigger_push);
+            return true;
+        }
+    } else {
+        TLOG_WARN("STOP policy received for unknown workload '", workload_id, "'.");
+        return false;
+    }
+}
+

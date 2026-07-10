@@ -204,6 +204,26 @@ TEST_F(SchedInfoServiceTest, GetSchedInfoMapThreadSafety) {
     }
 }
 
+TEST_F(SchedInfoServiceTest, RemoveWorkloadProducesEmptyTableForNode) {
+    SchedInfo sched_info = CreateSampleSchedInfo("wl_to_remove", 1);
+    Response reply;
+    grpc::ServerContext context;
+
+    Status status = service_impl_->AddSchedInfo(&context, &sched_info, &reply);
+    EXPECT_TRUE(status.ok());
+
+    auto sched_tables_before = service_impl_->GetScheduleTables();
+    ASSERT_NE(sched_tables_before.find("node1"), sched_tables_before.end());
+    EXPECT_GT(sched_tables_before["node1"].partitions_size(), 0);
+
+    bool removed = service_impl_->RemoveWorkload("wl_to_remove");
+    EXPECT_TRUE(removed);
+
+    auto sched_tables_after = service_impl_->GetScheduleTables();
+    ASSERT_NE(sched_tables_after.find("node1"), sched_tables_after.end());
+    EXPECT_EQ(sched_tables_after["node1"].partitions_size(), 0);
+}
+
 // Tests for SchedInfoServer
 class SchedInfoServerTest : public ::testing::Test {
 protected:

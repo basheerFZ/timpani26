@@ -103,10 +103,12 @@ TEST_F(GlobalSchedulerTest, SingleCbsTaskProducesTable) {
     EXPECT_TRUE(has_cbs);
 }
 
-TEST_F(GlobalSchedulerTest, EmptyTasksReturnsError) {
+TEST_F(GlobalSchedulerTest, EmptyTasksReturnsEmptyTable) {
     std::vector<ClassifiedTask> tasks;
     auto result = scheduler_->generate_schedule("node1", tasks);
-    ASSERT_FALSE(IsSuccess(result));
+    ASSERT_TRUE(IsSuccess(result));
+    const auto& table = GetTable(result);
+    EXPECT_EQ(table.partitions_size(), 0);
 }
 
 // ─── Harmonic Period Validation ─────────────────────────────────────────────

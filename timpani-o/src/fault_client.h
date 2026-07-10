@@ -6,7 +6,9 @@
 #ifndef FAULT_CLIENT_H
 #define FAULT_CLIENT_H
 
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <grpcpp/grpcpp.h>
 
@@ -46,15 +48,21 @@ class FaultServiceClient
     bool NotifyFault(const std::string &workload_id,
                      const std::string &node_id,
                      const std::string &task_name,
-                     FaultType fault_type);
+                     FaultType fault_type,
+                     uint32_t cumulative_dmiss = 0);
 
   private:
+    static constexpr size_t kMaxRetryQueue = 1024;
+
     FaultServiceClient();
     FaultServiceClient(const FaultServiceClient&) = delete;
     FaultServiceClient& operator=(const FaultServiceClient&) = delete;
     ~FaultServiceClient();
 
     static const char* FaultTypeToStr(FaultType type);
+    bool SendFaultRpc(const FaultInfo& request);
+    bool FlushRetryQueueLocked();
+    void EnqueueRetryLocked(const FaultInfo& request);
 
     // Create gRPC channel and stub
     bool CreateChannel(const std::string& server_address);
@@ -62,6 +70,8 @@ class FaultServiceClient
     std::shared_ptr<Channel> channel_;
     std::unique_ptr<FaultService::Stub> stub_;
     bool initialized_;
+    std::deque<FaultInfo> retry_queue_;
+    std::mutex mutex_;
 };
 
 #endif  // FAULT_CLIENT_H

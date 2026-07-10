@@ -44,12 +44,13 @@ struct ClassifiedTask {
     uint32_t    period_us;      // L1: period / L2: min_inter_arrival
     uint32_t    wcet_us;        // worst-case execution time
     uint32_t    deadline_us;
-    int         assigned_cpu;   // filled during CPU assignment (-1 = unassigned)
+    uint32_t    max_dmiss;
+    int         assigned_cpu;
 
     ClassifiedTask()
         : mechanism(Mechanism::TT),
           period_us(0), wcet_us(0), deadline_us(0),
-          assigned_cpu(-1) {}
+          assigned_cpu(-1), max_dmiss(0) {}
 };
 
 /**
@@ -71,6 +72,7 @@ struct TtSlotPlacement {
     uint32_t    offset_us;
     uint32_t    duration_us;
     uint32_t    deadline_us;
+    uint32_t    max_dmiss;
     int         cpu;
 };
 
@@ -92,6 +94,7 @@ struct CbsAllocation {
     uint32_t    budget_us;      // Cs — server budget = WCET per arrival
     uint32_t    period_us;      // Ts — replenishment period = MIT
     uint32_t    deadline_us;
+    uint32_t    max_dmiss;
     int         cpu;
 };
 
@@ -176,6 +179,7 @@ public:
     static constexpr double U_OVERHEAD  = 0.02;   // Timer Master + BPF dispatch
     static constexpr double U_BOUND     = 0.80;   // Conservative utilization bound (DDR-004 §5)
     static constexpr uint32_t CBS_MIN_EXEC_US = 100; // Minimum usable gap (μs)
+    static uint64_t fnv1a_hash(const char* s);
 
 private:
     // ── Step 2: CPU assignment ──
@@ -215,7 +219,6 @@ private:
     static uint64_t lcm(uint64_t a, uint64_t b);
     static uint64_t calculate_hyperperiod(const std::vector<uint64_t>& periods);
     static bool     validate_harmonic(const std::vector<uint64_t>& periods);
-    static uint64_t fnv1a_hash(const char* s);
 
     std::shared_ptr<NodeConfigManager> node_config_manager_;
 };
