@@ -109,32 +109,63 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
                     FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
         }
 
+        std::unordered_map<uint64_t, uint32_t> prev_mapping =
+            task_hash_to_shm_idx_;
         task_hash_to_shm_idx_.clear();
-        uint32_t shm_idx = 0;
 
+        std::vector<bool> used_slots(TIMPANI_MAX_TASKS, false);
+
+        /* First pass: preserve stable SHM indices for existing tasks */
         for (const auto& entry : slot_table_) {
             if (task_hash_to_shm_idx_.count(entry.task_id_hash)) continue;
-            if (shm_idx >= TIMPANI_MAX_TASKS) {
+            auto it = prev_mapping.find(entry.task_id_hash);
+            if (it != prev_mapping.end() && it->second < TIMPANI_MAX_TASKS &&
+                !used_slots[it->second]) {
+                uint32_t idx = it->second;
+                task_hash_to_shm_idx_[entry.task_id_hash] = idx;
+                used_slots[idx] = true;
+                strncpy(const_cast<char*>(ttsched_shm_->tasks[idx].name),
+                        entry.task_name.c_str(), 15);
+                ttsched_shm_->tasks[idx].name[15] = '\0';
+            }
+        }
+
+        /* Second pass: allocate lowest available SHM indices for new tasks */
+        for (const auto& entry : slot_table_) {
+            if (task_hash_to_shm_idx_.count(entry.task_id_hash)) continue;
+
+            uint32_t idx = 0;
+            while (idx < TIMPANI_MAX_TASKS && used_slots[idx]) {
+                idx++;
+            }
+            if (idx >= TIMPANI_MAX_TASKS) {
                 std::cerr << "[TimerMaster] Too many unique tasks (max "
                           << TIMPANI_MAX_TASKS << ")" << std::endl;
                 break;
             }
-            /* Write name and reset counter */
-            strncpy(const_cast<char*>(ttsched_shm_->tasks[shm_idx].name),
-                    entry.task_name.c_str(), 15);
-            ttsched_shm_->tasks[shm_idx].name[15] = '\0';
-            ttsched_shm_->tasks[shm_idx].counter = 0;
 
-            task_hash_to_shm_idx_[entry.task_id_hash] = shm_idx;
-            std::cout << "[TimerMaster] SHM slot[" << shm_idx
-                      << "] = " << entry.task_name << " hash=0x" << std::hex
-                      << entry.task_id_hash << std::dec << std::endl;
-            shm_idx++;
+            used_slots[idx] = true;
+            task_hash_to_shm_idx_[entry.task_id_hash] = idx;
+            strncpy(const_cast<char*>(ttsched_shm_->tasks[idx].name),
+                    entry.task_name.c_str(), 15);
+            ttsched_shm_->tasks[idx].name[15] = '\0';
+            ttsched_shm_->tasks[idx].counter = 0;
+        }
+
+        uint32_t total_slots = 0;
+        for (const auto& kv : task_hash_to_shm_idx_) {
+            if (kv.second + 1 > total_slots) {
+                total_slots = kv.second + 1;
+            }
+            std::cout << "[TimerMaster] SHM slot[" << kv.second
+                      << "] = " << ttsched_shm_->tasks[kv.second].name
+                      << " hash=0x" << std::hex << kv.first << std::dec
+                      << std::endl;
         }
 
         /* Publish atomically: first n_tasks, then magic */
-        __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->n_tasks), shm_idx,
-                         __ATOMIC_RELEASE);
+        __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->n_tasks),
+                         total_slots, __ATOMIC_RELEASE);
         __atomic_store_n(const_cast<uint32_t*>(&ttsched_shm_->magic),
                          TIMPANI_TTSCHED_MAGIC, __ATOMIC_RELEASE);
 
