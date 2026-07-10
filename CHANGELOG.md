@@ -7,6 +7,48 @@ and this project adheres to [Calendar Versioning](https://calver.org/) (YYYY.MM.
 
 ## [Unreleased]
 
+## [2026.07.0] - 2026-07-10
+
+Major feature release introducing CBS scheduling Phase 2, Fault Monitor integration, and various stability fixes.
+
+### timpani-n
+
+#### Added
+- **TT+CBS Scheduling Phase 2**: Implemented advanced TT+CBS scheduling logic and CBS deadline miss detection in BPF.
+- **Fault Monitor Integration**: 
+  - Added threshold-based fault filtering and max_dmiss propagation.
+  - Implemented TT/CBS Execution Domain Eviction upon receiving `ACTION_STOP` recovery signals.
+  - Handled RecoverySignal Stop Action and encapsulated dmiss count tracking.
+- **TimerMaster Improvements**: Implemented logic to catch up stale epochs for accurate scheduling.
+- **Routing & Lifecycles**:
+  - Route TT tasks to assigned CPUs using `SCX_DSQ_LOCAL_ON`.
+  - Added deletion interfaces to BpfLoader and TimerMaster.
+
+#### Fixed
+- Broadcast shutdown on TimerMaster exit to prevent hanging processes.
+- Removed stale `partition_map` update from TaskRegistry.
+- Enhanced CPU kick for replenished throttled tasks.
+
+### timpani-o
+
+#### Added
+- **Fault Management**: Forward faults, send RecoverySignal, and enforce stop-state sync with fault forward retry queue.
+- **TT+CBS Support**: Introduced TT+CBS scheduling table support and added grpcurl test scripts.
+- **Build & CI**: Added Dockerfile for Alpine-based builds.
+
+#### Fixed
+- Prevented full schedule push during `ACTION_STOP`.
+- Clarified hyperperiod computation in the global scheduler.
+
+### sample-apps
+
+#### Added
+- Added `cbstask` for CBS workload simulation.
+
+#### Fixed
+- Set `SCHED_EXT` policy correctly and fixed SHM lifecycle.
+- Skip workload execution when `ttsched` is not ready.
+- Updated `ALGO_BUSY` behavior for simulations.
 ## [2026.04.2] - 2026-04-27
 
 Patch release for sample-apps IPC compatibility and DDR-005 BPF scheduler compliance.

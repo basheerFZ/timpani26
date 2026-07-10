@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| **Version** | 2026.04.1 ([CalVer](https://calver.org/)) |
+| **Version** | 2026.07.0 ([CalVer](https://calver.org/)) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 | **License** | MIT |
 
