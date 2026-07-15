@@ -88,6 +88,10 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
                                      uint64_t hyperperiod_us, uint64_t epoch_ns)
 {
     std::unique_lock<std::mutex> lock(schedule_mutex_);
+    /* Runtime table updates are serialized by the gRPC callback path in this
+     * component. The slot-table swap, SHM publication, and worker restart are
+     * therefore treated as a single state transition. If this becomes
+     * multi-threaded, an explicit higher-level serializer should be added. */
     slot_table_ = slots;
     hyperperiod_ns_ = hyperperiod_us * 1000ULL;
     epoch_ns_ = epoch_ns;
@@ -191,6 +195,9 @@ void TimerMaster::set_schedule_table(const std::vector<SlotEntry>& slots,
 
 void TimerMaster::start()
 {
+    /* Lock ordering rule: lifecycle_mutex_ must be acquired before
+     * schedule_mutex_ whenever both are needed. This prevents lock inversion
+     * between the gRPC-driven table updates and the timer-thread lifecycle. */
     std::lock_guard<std::recursive_mutex> lk(lifecycle_mutex_);
 
     /* Stop any existing per-CPU threads before spawning new ones */
@@ -283,6 +290,8 @@ uint64_t TimerMaster::compute_next_tt_start_for_cpu(
 void TimerMaster::remove_workload(uint64_t workload_id_hash)
 {
     std::unique_lock<std::mutex> lock(schedule_mutex_);
+    /* remove_workload() follows the same gRPC-driven update path as
+     * set_schedule_table() and reuses the same serialized state transition. */
     auto it = std::remove_if(slot_table_.begin(), slot_table_.end(),
                              [workload_id_hash](const SlotEntry& entry) {
                                  return entry.workload_id_hash == workload_id_hash;
@@ -304,6 +313,10 @@ void TimerMaster::cpu_thread_loop(uint32_t cpu,
                                   uint64_t hyperperiod_ns,
                                   uint64_t epoch_ns)
 {
+    /* "Per-CPU" here means each worker loop manages one partition of the slot
+     * table for a specific CPU. The thread itself is not pinned to that CPU
+     * with sched_setaffinity(), so this is a logical partitioning scheme rather
+     * than an execution-affinity guarantee. */
     struct sched_param param = {};
     param.sched_priority = 99;
     sched_setscheduler(0, SCHED_FIFO, &param);
@@ -456,6 +469,10 @@ void TimerMaster::cpu_thread_loop(uint32_t cpu,
 void TimerMaster::wake_task(uint64_t task_id_hash)
 {
     if (!ttsched_shm_) return;
+
+    /* Read the task-to-SHM mapping under schedule_mutex_ so this wake-up path
+     * stays consistent with set_schedule_table()/remove_workload() updates. */
+    std::lock_guard<std::mutex> lock(schedule_mutex_);
 
     auto it = task_hash_to_shm_idx_.find(task_id_hash);
     if (it == task_hash_to_shm_idx_.end()) return;
