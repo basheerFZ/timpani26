@@ -14,8 +14,9 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static volatile struct timpani_ttsched_shm* g_shm = NULL;
-static int g_task_idx = -1; /* index into g_shm->tasks[], -1 = not found yet */
+static __thread volatile struct timpani_ttsched_shm* g_shm = NULL;
+static __thread int g_task_idx = -1; /* index into g_shm->tasks[], -1 = not found yet */
+static __thread uint32_t g_shm_generation = 0;
 
 static int find_task_slot(volatile struct timpani_ttsched_shm* shm,
                           const char* name)
@@ -50,6 +51,7 @@ void ttsched_init(void)
     char my_name[16] = {};
     prctl(PR_GET_NAME, my_name, 0, 0, 0);
     g_task_idx = find_task_slot(g_shm, my_name);
+    g_shm_generation = g_shm->generation;
 }
 
 int ttsched_wait_next_period(void)
@@ -83,6 +85,12 @@ int ttsched_wait_next_period(void)
             usleep(1000);
             return -1;
         }
+    }
+
+    /* Detect schedule table update via generation counter */
+    if (g_shm->generation != g_shm_generation) {
+        g_shm_generation = g_shm->generation;
+        g_task_idx = -1;
     }
 
     /* Retry slot lookup if schedule arrived after ttsched_init() */
