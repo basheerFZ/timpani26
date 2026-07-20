@@ -14,9 +14,9 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static volatile struct timpani_ttsched_shm* g_shm = NULL;
-static int g_task_idx = -1; /* index into g_shm->tasks[], -1 = not found yet */
-static uint32_t g_shm_generation = 0;
+static __thread volatile struct timpani_ttsched_shm* g_shm = NULL;
+static __thread int g_task_idx = -1; /* index into g_shm->tasks[], -1 = not found yet */
+static __thread uint32_t g_shm_generation = 0;
 
 static int find_task_slot(volatile struct timpani_ttsched_shm* shm,
                           const char* name)
