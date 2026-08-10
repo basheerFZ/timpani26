@@ -23,11 +23,26 @@ SPDX-License-Identifier: MIT
 | **무중단** | 프로세스 재시작 없이 워크로드 변경 적용 |
 | **결정론** | Hyperperiod 경계에서만 테이블 교체 |
 | **격리** | 한 워크로드의 변경이 다른 워크로드에 영향 없음 (FFI) |
-| **원자성** | 테이블 교체는 단일 원자적 연산 |
+| **원자성** | 갱신은 hyperperiod 경계에서만 적용됨; userspace↔BPF↔app 경계 간 일관성은 in-place map upsert + SHM generation 핸드셰이크(magic-last publish)로 보장 |
+
+### 1.1 Zero-Downtime 달성 방식 (구현됨 — Phase 2)
+
+`timpani26` 기준으로, zero-downtime 갱신은 BPF-map double buffer가 아니라 **userspace에서** 수행됩니다:
+
+- **per-CPU 타이머 스레드**: TIMPANI-N은 격리 CPU마다 타이머 스레드 1개(`TimerMaster::cpu_thread_loop`)를 두고, 각 스레드는 공유 `epoch_ns` hyperperiod 격자 위에서 자기 CPU의 TT 슬롯만 발화합니다. 이는 여러 CPU에서 같은 시각에 예약된 슬롯을 제대로 발화하지 못하던 기존 단일 스레드 마스터를 대체한 것입니다(`46a301d`).
+- **in-place BPF map upsert**: `set_schedule_table()` / `remove_workload()`가 타이머 스레드를 재구성하고 live BPF map(`tt_table_map`, `current_slot_map`, `cbs_map`)을 직접 upsert합니다. 활성 테이블은 두 개가 아니라 하나입니다.
+- **SHM generation 핸드셰이크**: 타이머 마스터가 앱 공유 SHM의 `generation` 카운터를 증가시키고 `magic`을 마지막에 써서, `libttsched` 클라이언트가 변경 시 자기 task 슬롯을 재조회하도록 강제합니다(`8369e01`). 기존 task의 SHM slot 인덱스는 wakeup 왜곡을 막기 위해 안정적으로 유지되며(`42f12f5`), 멀티스레드 앱을 위해 스레드별 SHM 상태는 thread-local입니다(`bf8ba5c`).
+- **결정성**: 변경은 다음 hyperperiod 경계에서 적용됩니다. 늦게 시작한 경우(`epoch_ns`가 이미 과거)에는 동일 전역 격자의 다음 경계로 catch-up합니다.
+
+> **참고**: BPF-map **double buffering**(`active_map_idx`, §2)은 BPF 테이블 map을 통째로 원자적으로 교체해야 하는 상황을 위한 *예비(deferred)* 메커니즘입니다. 아직 **미구현**이며(Open Item B-2.1), 위 증분 갱신 경로에서는 사용되지 않습니다.
+
+> **SHM 레이아웃 변경**(`8369e01`, breaking): `timpani_ttsched_shm`에 `generation` 필드가 추가되고 `tasks[]` 배열 오프셋이 byte 8 → 16으로 이동했습니다. `libttsched.h` 사용처(timpani-n, sample-apps, 외부 TT 워크로드)는 재컴파일이 필요합니다.
 
 ---
 
-## 2. Double Buffering 아키텍처
+## 2. Double Buffering 아키텍처 (Deferred — 미구현)
+
+> **상태**: 이 섹션은 `timpani26`에 **미구현**인 **계획된** 메커니즘을 기술합니다(Open Item B-2.1). 아래의 `tt_table_map_0` / `tt_table_map_1` 및 `active_map_idx`는 현재 소스에 **존재하지 않습니다** — 단일 `tt_table_map`이 있으며, `ops.dispatch()`는 (per-CPU 타이머 스레드가 몰아주는, §1.1) `current_slot_map`으로 활성 슬롯을 선택합니다. Double buffering은 BPF 테이블 map을 **통째로 원자적으로 교체**해야 하는 미래 상황을 위한 예비이며, 출시된 증분 갱신 경로(§1.1, §4)에는 필요하지 않습니다.
 
 ### 2.1 개념
 
@@ -271,6 +286,8 @@ Hyperperiod = 660ms (LCM 재계산)
 
 ## 4. Timer Master 구현
 
+> **상태**: §4.1의 pseudo-code는 **기존 단일 스레드 double-buffer 설계**를 반영하며 `timpani26`과 **일치하지 않습니다**. 출시본에서 `TimerMaster`는 **격리 CPU마다 타이머 스레드 1개**(`cpu_thread_loop`)를 돌리고, in-place BPF map upsert + SHM generation 핸드셰이크로 테이블 변경을 적용하며(`performAtomicSwap()` / `active_map_idx` 없음), 공유 `epoch_ns` hyperperiod 격자에 정렬하고 늦은 시작은 catch-up합니다. 구현 모델은 §1.1 참조. §4.1은 예비 double-buffer 경로(§2)의 참조 설계로 남겨둡니다.
+
 ### 4.1 유저스페이스 스레드 (C++)
 
 ```cpp
@@ -472,7 +489,7 @@ Hyperperiod 경계에서 swap하면:
 
 ## 8. 미결 항목
 
-- [ ] **B-2.1**: `active_map_idx` BPF map 구현 (Phase 2)
+- [ ] **B-2.1**: `active_map_idx` BPF map 구현 — 예비(deferred); BPF 테이블 map 통째 원자적 교체 상황에만 필요. 출시된 증분 갱신 경로(§1.1)에는 불필요.
 - [ ] **B-3.1**: BPF atomic swap 가능성 검증
 - [ ] 타겟 하드웨어에서 실제 swap 지연 시간 측정
 - [ ] 허용 가능한 전환 지연을 위한 최대 hyperperiod 정의

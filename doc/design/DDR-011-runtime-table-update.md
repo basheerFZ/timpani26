@@ -23,11 +23,26 @@ This document describes the **zero-downtime schedule table update** mechanism in
 | **Zero-Downtime** | Workload changes applied without process restart |
 | **Determinism** | Table swap occurs only at hyperperiod boundaries |
 | **Isolation** | Changes to one workload do not affect others (FFI) |
-| **Atomicity** | Table swap is a single atomic operation |
+| **Atomicity** | Updates take effect only at a hyperperiod boundary; consistency across the userspace↔BPF↔app boundary is provided by in-place map upserts plus an SHM generation handshake (magic-last publish) |
+
+### 1.1 How Zero-Downtime Is Achieved (Implemented — Phase 2)
+
+As shipped in `timpani26`, zero-downtime updates are performed **in userspace**, not via a BPF-map double buffer:
+
+- **Per-CPU timer threads**: TIMPANI-N runs one timer thread per isolated CPU (`TimerMaster::cpu_thread_loop`), each firing only its own CPU's TT slots on the shared `epoch_ns` hyperperiod grid. This replaced the earlier single-thread master, which could not correctly fire slots scheduled on multiple CPUs at the same instant (`46a301d`).
+- **In-place BPF map upserts**: `set_schedule_table()` / `remove_workload()` rebuild the timer threads and upsert the live BPF maps (`tt_table_map`, `current_slot_map`, `cbs_map`) directly; there is a single active table, not two.
+- **SHM generation handshake**: the timer master bumps a `generation` counter in the app-shared SHM and writes `magic` last, forcing `libttsched` clients to re-look up their task slots on change (`8369e01`). SHM slot indices are kept stable for existing tasks to avoid wakeup distortion (`42f12f5`), and per-thread SHM state is thread-local for multi-threaded apps (`bf8ba5c`).
+- **Determinism**: changes take effect at the next hyperperiod boundary; a late start (where `epoch_ns` is already in the past) catches up to the next boundary on the same global grid.
+
+> **Note**: BPF-map **double buffering** (`active_map_idx`, §2) is a *deferred* mechanism reserved for the atomic replacement of an entire BPF table map. It is **not yet implemented** (Open Item B-2.1) and is not exercised by the incremental update path above.
+
+> **SHM layout change** (`8369e01`, breaking): `timpani_ttsched_shm` gained a `generation` field and the `tasks[]` array offset moved from byte 8 to 16. `libttsched.h` consumers (timpani-n, sample-apps, external TT workloads) must be recompiled.
 
 ---
 
-## 2. Double Buffering Architecture
+## 2. Double Buffering Architecture (Deferred — Not Yet Implemented)
+
+> **Status**: This section describes a **planned** mechanism that is **not implemented** in `timpani26` (Open Item B-2.1). The maps `tt_table_map_0` / `tt_table_map_1` and `active_map_idx` below do **not** exist in the current source — there is a single `tt_table_map`, and `ops.dispatch()` selects the active slot via `current_slot_map` (driven by the per-CPU timer threads, §1.1). Double buffering is reserved for a future case requiring **atomic replacement of an entire BPF table map**; the shipped incremental update path (§1.1, §4) does not need it.
 
 ### 2.1 Concept
 
@@ -271,6 +286,8 @@ Hyperperiod = 660ms (LCM recalculated)
 
 ## 4. Timer Master Implementation
 
+> **Status**: The pseudo-code in §4.1 reflects the **original single-thread double-buffer design** and does **not** match `timpani26`. As shipped, `TimerMaster` runs **one timer thread per isolated CPU** (`cpu_thread_loop`), applies table changes via in-place BPF map upserts plus the SHM generation handshake (no `performAtomicSwap()` / `active_map_idx`), and aligns to the shared `epoch_ns` hyperperiod grid with catch-up for late starts. See §1.1 for the implemented model; §4.1 is retained as the reference design for the deferred double-buffer path (§2).
+
 ### 4.1 Userspace Thread (C++)
 
 ```cpp
@@ -472,7 +489,7 @@ Waiting for hyperperiod boundary ensures:
 
 ## 8. Open Items
 
-- [ ] **B-2.1**: Implement `active_map_idx` BPF map (Phase 2)
+- [ ] **B-2.1**: Implement `active_map_idx` BPF map — deferred; needed only for atomic full-table BPF-map replacement. The shipped incremental update path (§1.1) does not require it.
 - [ ] **B-3.1**: Verify BPF atomic swap feasibility
 - [ ] Measure actual swap latency on target hardware
 - [ ] Define maximum hyperperiod for acceptable transition delay
