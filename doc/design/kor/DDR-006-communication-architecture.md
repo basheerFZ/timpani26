@@ -25,6 +25,7 @@ SPDX-License-Identifier: MIT
 | O↔N 프로토콜 | **gRPC 양방향 스트림** (libtrpc 대체) |
 | timpani-n 스택 | **C++ daemon** (gRPC 연동) + 순수 C BPF |
 | 런타임 테이블 | 지원 (재시작 없는 hot update) |
+| Recovery | Pullpiri→O `RecoveryService.EnforceRecoveryPolicy`; O→N `RecoverySignal`(`NodeStream`); O→Pullpiri `FaultService.NotifyFault` (bounded retry queue) |
 | libtrpc | 완전 대체 (사용 중단) |
 
 ---

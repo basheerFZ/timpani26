@@ -202,7 +202,9 @@ Pullpiri → RegisterWorkload(Task C, L2 Sporadic)
 
 ### 3.2 워크로드 제거 (STOP)
 
-**트리거:** Pullpiri가 `RemoveWorkload` 요청 전송 (FaultAction = STOP)
+**트리거:** Pullpiri가 `RemoveWorkload` 요청을 보내거나 `RecoveryService.EnforceRecoveryPolicy(RECOVERY_STOP)`를 호출 (DDR-003 §5.1)
+
+> **구현된 eviction 경로(`timpani26`)**: 제거는 아래 double-buffer swap이 아니라 userspace 증분 경로(§1.1)로 수행됩니다. `TimerMaster::remove_workload(workload_id_hash)`가 live 테이블에서 해당 워크로드 슬롯을 제거하고, running이면 per-CPU 타이머 스레드를 재구성합니다. BPF 상태는 `BpfLoader::delete_tt_slot()`, `delete_cbs_state()`, `delete_task_meta()`로 정리됩니다. `RECOVERY_STOP` 시 `RecoveryServiceImpl::EnforceRecoveryPolicy`가 워크로드를 제거하고 `broadcast_recovery_signal(workload_id, ACTION_STOP)`를 `NodeStream`으로 해당 노드에 보냅니다. 아래 `tt_table_map_0/_1` swap 다이어그램은 예비 double-buffer 설계(§2)입니다.
 
 ```
 현재 상태:

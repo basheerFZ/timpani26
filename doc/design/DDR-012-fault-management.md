@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 
 **Date:** 2026-07-13  
 **Last Updated:** 2026-07-15  
-**Status:** Approved / Implemented  
+**Status:** Approved / Implemented (except the §4.2 `dmiss_counting_enabled_` event-transition gate, which is not present in `timpani26`)  
 **Author:** Jaehyun Kim  
 **Related:** DDR-002 (Scheduling Architecture), DDR-003 (Interface / Protocol), DDR-006 (Communication Architecture), DDR-011 (Runtime Table Update)
 
@@ -150,6 +150,11 @@ Detailed STOP sequence ownership remains in:
 - Interface/policy fields: DDR-003
 - Runtime table replacement and cleanup: DDR-011
 - Transport and delivery structure: DDR-006
+
+### 5.1 Implemented Recovery & Fault-Forward Path (`timpani26`)
+
+- **Recovery enforcement**: Pullpiri calls `RecoveryService.EnforceRecoveryPolicy(RecoveryCommand{workload_id, RECOVERY_STOP})` on TIMPANI-O. `RecoveryServiceImpl::EnforceRecoveryPolicy` removes the workload and broadcasts `RecoverySignal{ACTION_STOP}` to the owning TIMPANI-N over `OrchestratorService.NodeStream`. The node evicts the workload via `TimerMaster::remove_workload()` + `BpfLoader::delete_tt_slot()/delete_cbs_state()/delete_task_meta()` (DDR-011 §3.2).
+- **Fault forwarding (O → Pullpiri)**: `FaultServiceClient` forwards fault events to Pullpiri's `FaultService.NotifyFault`. On send failure it enqueues to a bounded in-memory `retry_queue_` (deque) and flushes on the next send; when the queue reaches `kMaxRetryQueue` the oldest event is dropped (verification/debug fault events are best-effort, not guaranteed delivery).
 
 ---
 

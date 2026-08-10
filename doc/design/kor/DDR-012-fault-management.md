@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 
 **작성일:** 2026-07-13  
 **최종 수정:** 2026-07-15  
-**상태:** 승인 / 구현 완료 (Approved / Implemented)  
+**상태:** 승인 / 구현 완료 (Approved / Implemented) — 단, §4.2 `dmiss_counting_enabled_` 이벤트 전이 게이트는 `timpani26`에 없음  
 **작성자:** 김재현 (Jaehyun Kim)  
 **관련 문서:** DDR-002 (Scheduling Architecture), DDR-003 (Interface / Protocol), DDR-006 (Communication Architecture), DDR-011 (Runtime Table Update)
 
@@ -149,6 +149,11 @@ STOP 세부 시퀀스(테이블 갱신, BPF map 정리, 경계 동기화)는 아
 - 인터페이스/정책 필드: DDR-003
 - 런타임 테이블 교체 및 정리: DDR-011
 - 통신 전달 구조: DDR-006
+
+### 5.1 구현된 Recovery 및 Fault-Forward 경로 (`timpani26`)
+
+- **Recovery 집행**: Pullpiri가 TIMPANI-O에 `RecoveryService.EnforceRecoveryPolicy(RecoveryCommand{workload_id, RECOVERY_STOP})`를 호출. `RecoveryServiceImpl::EnforceRecoveryPolicy`가 워크로드를 제거하고 `RecoverySignal{ACTION_STOP}`을 `OrchestratorService.NodeStream`으로 해당 TIMPANI-N에 broadcast. 노드는 `TimerMaster::remove_workload()` + `BpfLoader::delete_tt_slot()/delete_cbs_state()/delete_task_meta()`로 워크로드를 evict (DDR-011 §3.2).
+- **Fault 전달 (O → Pullpiri)**: `FaultServiceClient`가 fault 이벤트를 Pullpiri의 `FaultService.NotifyFault`로 전달. 전송 실패 시 bounded in-memory `retry_queue_`(deque)에 넣고 다음 전송 때 flush; 큐가 `kMaxRetryQueue`에 도달하면 가장 오래된 이벤트를 drop (검증/디버그용 fault 이벤트는 best-effort이며 전달 보장이 아님).
 
 ---
 

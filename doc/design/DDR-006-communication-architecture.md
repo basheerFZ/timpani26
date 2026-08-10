@@ -25,6 +25,7 @@ SPDX-License-Identifier: MIT
 | O↔N Protocol | **gRPC Bidirectional Stream** (replaces libtrpc) |
 | timpani-n stack | **C++ daemon** (gRPC integration) + Pure C BPF |
 | Runtime tables | Supported (hot updates without restart) |
+| Recovery | Pullpiri→O `RecoveryService.EnforceRecoveryPolicy`; O→N `RecoverySignal` over `NodeStream`; O→Pullpiri `FaultService.NotifyFault` with a bounded retry queue |
 | libtrpc | Fully deprecated |
 
 ---

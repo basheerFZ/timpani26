@@ -202,7 +202,9 @@ Pullpiri → RegisterWorkload(Task C, L2 Sporadic)
 
 ### 3.2 Remove Workload (STOP)
 
-**Trigger:** Pullpiri sends `RemoveWorkload` request (FaultAction = STOP)
+**Trigger:** Pullpiri sends a `RemoveWorkload` request, or calls `RecoveryService.EnforceRecoveryPolicy(RECOVERY_STOP)` (DDR-003 §5.1)
+
+> **Implemented eviction path (`timpani26`)**: removal uses the userspace incremental path (§1.1), not the double-buffer swap depicted below. `TimerMaster::remove_workload(workload_id_hash)` drops the workload's slots from the live table and, if running, rebuilds the per-CPU timer threads; BPF state is torn down via `BpfLoader::delete_tt_slot()`, `delete_cbs_state()`, and `delete_task_meta()`. On `RECOVERY_STOP`, `RecoveryServiceImpl::EnforceRecoveryPolicy` removes the workload and calls `broadcast_recovery_signal(workload_id, ACTION_STOP)` to the owning node over `NodeStream`. The `tt_table_map_0/_1` swap diagram below is the deferred double-buffer design (§2).
 
 ```
 Current State:
