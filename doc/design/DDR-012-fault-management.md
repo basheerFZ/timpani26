@@ -80,17 +80,21 @@ In v4, table application enforces this order:
 
 The snippet below is illustrative pseudo-code and is not intended to be a literal copy of the production implementation.
 ```cpp
-// 1) Pre-Pass: register current_limit before BPF attachment
+// 1) Pre-Pass: collect current_limit before BPF attachment, then apply in bulk
+std::map<std::pair<uint64_t, uint64_t>, uint32_t> new_limits;
 for (const auto& partition : table.partitions()) {
     for (const auto& layer : partition.layers()) {
         for (const auto& tt_slot : layer.tt_slots()) {
-            fault_monitor.update_task_limit(tt_slot.task_id(), tt_slot.current_limit());
+            if (tt_slot.current_limit() > 0)
+                new_limits[{tt_slot.workload_id_hash(), tt_slot.task_id_hash()}] = tt_slot.current_limit();
         }
         for (const auto& cbs_entry : layer.cbs_entries()) {
-            fault_monitor.update_task_limit(cbs_entry.task_id(), cbs_entry.current_limit());
+            if (cbs_entry.current_limit() > 0)
+                new_limits[{cbs_entry.workload_id_hash(), cbs_entry.task_id_hash()}] = cbs_entry.current_limit();
         }
     }
 }
+fault_monitor.update_current_limits(new_limits);  // bulk setter (FaultMonitor::update_current_limits)
 
 // 2) Main Pass: register BPF state and enable scheduling
 for (const auto& partition : table.partitions()) {

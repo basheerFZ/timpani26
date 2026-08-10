@@ -62,7 +62,7 @@ TIMPANI Phase 2는 **Partial BPF Scheduler** (`SCX_OPS_SWITCH_PARTIAL` 모드)�
 
 3. **DSQ_THROTTLED**
    - **ID**: `(1ULL << 61) | 1` (글로벌 Custom DSQ)
-   - **대상**: 예산을 소진한 L2 태스크 전용 보류 큐. **절대 디스패치되지 않으며** `bpf_timer`에 의한 보충을 대기합니다.
+   - **대상**: 예산을 소진한 L2 태스크 전용 보류 큐. **절대 디스패치되지 않으며**, `bpf_timer`가 아니라 lazy 방식으로 보충됩니다 — `remaining_us`는 다음 enqueue/tick 시 재계산됩니다.
 
 4. **DSQ_BE**
    - **대상**: L3/L4 레거시 대응 큐. Phase 2의 완전한 CFS 위임 정책에 따라 점차 사용되지 않습니다.
@@ -140,7 +140,7 @@ HSF Level 2 (워크로드 / Leaf)
 │    → TT_SLOT (L1 Periodic): TT_WAIT_QUEUE (Custom)에 보류    │
 │    → CBS (L2 Sporadic): cbs_map 잔액 확인                    │
 │                  잔액 > 0 → DSQ_CBS                          │
-│                  잔액 = 0 → DSQ_THROTTLED (bpf_timer 대기)   │
+│                  잔액 = 0 → DSQ_THROTTLED (lazy)             │
 │    → BEST_EFFORT (L3/L4): DSQ_BE (낮은 우선순위)             │
 │                                                             │
 │  ops.dispatch()                                             │
@@ -157,7 +157,7 @@ HSF Level 2 (워크로드 / Leaf)
 │               초과 → fault_ringbuf 기록                     │
 │    → L2 CBS task: 실행 시간 측정 → budget 차감          │
 │               budget ≤ 0 → throttled_queue 이동            │
-│               bpf_timer 설정 (Ts 후 예산 보충)              │
+│               replenish_at_ns 기록 (lazy, Ts 후 보충)       │
 └─────────────────────────────────────────────────────────────┘
           ↑ scx_bpf_kick_cpu() 호출
 ┌─────────────────────────────────────────────────────────────┐
@@ -206,7 +206,7 @@ struct CbsState {
     u32 budget_us;         // Cs: 최대 예산
     u32 period_us;         // Ts: 보충 주기
     u32 remaining_us;      // 현재 잔액 (runtime에 차감)
-    u64 replenish_at_ns;   // 다음 보충 시각 (bpf_timer 기준)
+    u64 replenish_at_ns;   // 다음 보충 시각 (lazy; enqueue/tick 시 확인)
     u32 deadline_us;
 };
 
@@ -383,9 +383,10 @@ void BPF_STRUCT_OPS(timpani_stopping, struct task_struct *p, bool runnable)
                 cbs->remaining_us -= exec_us;
             else {
                 cbs->remaining_us = 0;
-                // 예산 소진 → bpf_timer로 Ts 후 보충 예약
-                bpf_timer_start(&cbs->replenish_timer, cbs->period_us * 1000,
-                                BPF_F_TIMER_ABS);
+                // 예산 소진 → lazy 보충: 다음 보충 시각만 기록.
+                // cbs_lazy_replenish()가 다음 enqueue/tick에서 remaining_us를 복원하고,
+                // promote_throttled_if_replenished()가 DSQ_THROTTLED에서 빼낸다.
+                cbs->replenish_at_ns = now + (u64)cbs->period_us * 1000;
                 // throttled_queue로 이동 (다음 enqueue에서 처리)
             }
         }

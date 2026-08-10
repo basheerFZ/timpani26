@@ -80,17 +80,21 @@ v4에서는 스케줄 테이블 적용 시 아래 순서를 강제한다.
 
 아래 예시는 설명용 pseudo-code이며, 실제 구현을 그대로 복사한 코드가 아님을 명시한다.
 ```cpp
-// 1) Pre-Pass: current_limit 선등록
+// 1) Pre-Pass: current_limit 수집 후 일괄(bulk) 등록
+std::map<std::pair<uint64_t, uint64_t>, uint32_t> new_limits;
 for (const auto& partition : table.partitions()) {
     for (const auto& layer : partition.layers()) {
         for (const auto& tt_slot : layer.tt_slots()) {
-            fault_monitor.update_task_limit(tt_slot.task_id(), tt_slot.current_limit());
+            if (tt_slot.current_limit() > 0)
+                new_limits[{tt_slot.workload_id_hash(), tt_slot.task_id_hash()}] = tt_slot.current_limit();
         }
         for (const auto& cbs_entry : layer.cbs_entries()) {
-            fault_monitor.update_task_limit(cbs_entry.task_id(), cbs_entry.current_limit());
+            if (cbs_entry.current_limit() > 0)
+                new_limits[{cbs_entry.workload_id_hash(), cbs_entry.task_id_hash()}] = cbs_entry.current_limit();
         }
     }
 }
+fault_monitor.update_current_limits(new_limits);  // bulk setter (FaultMonitor::update_current_limits)
 
 // 2) Main Pass: BPF 등록 및 스케줄링 적용
 for (const auto& partition : table.partitions()) {

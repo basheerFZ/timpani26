@@ -62,7 +62,7 @@ TIMPANI Phase 2 operates as a **Partial BPF Scheduler** (`SCX_OPS_SWITCH_PARTIAL
 
 3. **DSQ_THROTTLED**
    - **ID**: `(1ULL << 61) | 1` (Global Custom DSQ)
-   - **Target**: holding queue for budget-exhausted L2 tasks. **Never dispatched**. Waits for `bpf_timer` replenishment.
+   - **Target**: holding queue for budget-exhausted L2 tasks. **Never dispatched**. Replenished lazily — `remaining_us` is recomputed on the next enqueue/tick, not by a `bpf_timer`.
 
 4. **DSQ_BE**
    - **Target**: Legacy representation for L3/L4. Subsumed by direct CFS delegation in Phase 2.
@@ -140,7 +140,7 @@ HSF Level 2 (Workload / Leaf)
 │    → TT_SLOT (L1 Periodic): wait in TT_WAIT_QUEUE (Custom) │
 │    → CBS (L2 Sporadic): check cbs_map balance              │
 │                  balance > 0 → DSQ_CBS                     │
-│                  balance = 0 → DSQ_THROTTLED (bpf_timer)   │
+│                  balance = 0 → DSQ_THROTTLED (lazy)       │
 │    → BEST_EFFORT (L3/L4): DSQ_BE (low priority)            │
 │                                                            │
 │  ops.dispatch()                                            │
@@ -157,7 +157,7 @@ HSF Level 2 (Workload / Leaf)
 │               if exceeded → record in fault_ringbuf         │
 │    → L2 CBS task: measure exec time → budget deduct         │
 │               budget ≤ 0 → move to throttled_queue         │
-│               set bpf_timer (replenish budget after Ts)     │
+│               record replenish_at_ns (lazy, after Ts)       │
 └─────────────────────────────────────────────────────────────┘
           ↑ calls scx_bpf_kick_cpu()
 ┌─────────────────────────────────────────────────────────────┐
@@ -206,7 +206,7 @@ struct CbsState {
     u32 budget_us;         // Cs: maximum budget
     u32 period_us;         // Ts: replenishment period
     u32 remaining_us;      // current balance (deducted at runtime)
-    u64 replenish_at_ns;   // next replenishment time (bpf_timer reference)
+    u64 replenish_at_ns;   // next replenishment time (lazy; checked on enqueue/tick)
     u32 deadline_us;
 };
 
@@ -391,9 +391,10 @@ void BPF_STRUCT_OPS(timpani_stopping, struct task_struct *p, bool runnable)
                 cbs->remaining_us -= exec_us;
             else {
                 cbs->remaining_us = 0;
-                // budget exhausted → schedule replenishment after Ts via bpf_timer
-                bpf_timer_start(&cbs->replenish_timer, cbs->period_us * 1000,
-                                BPF_F_TIMER_ABS);
+                // budget exhausted → lazy replenishment: record the next replenish time.
+                // cbs_lazy_replenish() restores remaining_us on the next enqueue/tick;
+                // promote_throttled_if_replenished() then moves the task out of DSQ_THROTTLED.
+                cbs->replenish_at_ns = now + (u64)cbs->period_us * 1000;
                 // move to throttled_queue (handled at next enqueue)
             }
         }
