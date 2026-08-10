@@ -267,6 +267,47 @@ enum FaultType {
 
 ---
 
+## 5.1 Recovery 인터페이스 (Pullpiri → TIMPANI-O → TIMPANI-N)
+
+> **`timpani26`에 구현됨.** Recovery는 위 FaultNotification 흐름과 구분되는 2-hop 경로다: Pullpiri가 `RecoveryService`로 TIMPANI-O에 지시하고, TIMPANI-O가 `OrchestratorService.NodeStream` 제어 채널(DDR-006)로 해당 TIMPANI-N에 신호한다.
+
+**Pullpiri → TIMPANI-O** (`schedinfo.proto`):
+
+```protobuf
+service RecoveryService {
+  rpc EnforceRecoveryPolicy (RecoveryCommand) returns (Response) {}
+}
+
+enum RecoveryPolicy {
+  RECOVERY_UNKNOWN   = 0;
+  RECOVERY_STOP      = 1;
+  RECOVERY_RESTART   = 2;
+  RECOVERY_TERMINATE = 3;
+}
+
+message RecoveryCommand {
+  string         workload_id     = 1;
+  RecoveryPolicy recovery_policy = 2;
+}
+```
+
+**TIMPANI-O → TIMPANI-N** (`node_control.proto`, `ControlCommand`에 실려 전달):
+
+```protobuf
+message RecoverySignal {
+  string workload_id = 1;
+  enum Action {
+    ACTION_STOP    = 0;
+    ACTION_RESTART = 1;
+  }
+  Action action = 2;
+}
+```
+
+> **`FaultPolicy` / `FaultAction`(§3)에 대한 참고**: 이들은 illustrative `WorkloadSpec`의 *설계 시점* 워크로드별 정책 필드다. 실제 출시된 *런타임* 집행 인터페이스는 위의 `RecoveryPolicy` / `RecoveryCommand`(Pullpiri→O)와 `RecoverySignal`(O→N)이다. `RECOVERY_TERMINATE`는 `FaultAction`에 대응 항목이 없다.
+
+---
+
 ## 6. PTP 시간 동기화
 
 모든 TIMPANI-N 노드는 PTP 동기화된 `CLOCK_REALTIME`에서 파생된 공통 `epoch_ns`를 공유한다.

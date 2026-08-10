@@ -284,6 +284,47 @@ enum FaultType {
 
 ---
 
+## 5.1 Recovery Interface (Pullpiri → TIMPANI-O → TIMPANI-N)
+
+> **Implemented in `timpani26`.** Recovery is a two-hop path distinct from the FaultNotification flow above: Pullpiri instructs TIMPANI-O via `RecoveryService`, and TIMPANI-O then signals the owning TIMPANI-N over the `OrchestratorService.NodeStream` control channel (DDR-006).
+
+**Pullpiri → TIMPANI-O** (`schedinfo.proto`):
+
+```protobuf
+service RecoveryService {
+  rpc EnforceRecoveryPolicy (RecoveryCommand) returns (Response) {}
+}
+
+enum RecoveryPolicy {
+  RECOVERY_UNKNOWN   = 0;
+  RECOVERY_STOP      = 1;
+  RECOVERY_RESTART   = 2;
+  RECOVERY_TERMINATE = 3;
+}
+
+message RecoveryCommand {
+  string         workload_id     = 1;
+  RecoveryPolicy recovery_policy = 2;
+}
+```
+
+**TIMPANI-O → TIMPANI-N** (`node_control.proto`, carried in `ControlCommand`):
+
+```protobuf
+message RecoverySignal {
+  string workload_id = 1;
+  enum Action {
+    ACTION_STOP    = 0;
+    ACTION_RESTART = 1;
+  }
+  Action action = 2;
+}
+```
+
+> **Note on `FaultPolicy` / `FaultAction` (§3)**: those are the *design-time* per-workload policy fields on the illustrative `WorkloadSpec`. The *runtime* enforcement surface actually shipped is `RecoveryPolicy` / `RecoveryCommand` (Pullpiri→O) and `RecoverySignal` (O→N) above. `RECOVERY_TERMINATE` has no `FaultAction` equivalent.
+
+---
+
 ## 6. PTP Time Synchronization
 
 All TIMPANI-N nodes share a common `epoch_ns` derived from PTP-synchronized `CLOCK_REALTIME`.
