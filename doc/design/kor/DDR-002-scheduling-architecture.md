@@ -112,7 +112,7 @@ TIMPANI-N Daemon (C++, userspace)
 │     TIMPANI-O로부터 HierarchicalScheduleTable 수신
 │     BPF maps 업데이트:
 │       tt_table_map     — TT 슬롯 테이블
-│       budget_map       — CBS 예산 (Cs, Ts)
+│       cbs_map          — CBS 예산/상태 (Cs, Ts)
 │       partition_map    — cgroup_id → L1~L4
 │       current_slot_map — 현재 활성 TT 슬롯
 │

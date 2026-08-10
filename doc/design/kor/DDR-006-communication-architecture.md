@@ -12,10 +12,9 @@ SPDX-License-Identifier: MIT
 
 ---
 
-## 0. 구현 상태 (AI를 위한 참고 사항)
+## 0. 구현 상태
 
-> **IMPORTANT**: 이 문서에 기술된 gRPC 양방향 통신 및 C++ 데몬 재작성(Rework)은 **Phase 1에서 이미 구현이 완료되었습니다**.
-> **AI INSTRUCTION**: 문서를 읽는 AI 어시스턴트는 이 컴포넌트들을 기존 인프라로 간주해야 합니다. 사용자가 "미결 항목(Open Items)"(섹션 7)에 관련된 작업을 명시적으로 지시하지 않는 한, **여기서 읽기를 멈추고 문서의 나머지 부분은 무시하십시오**. 이를 통해 컨텍스트를 절약하고 중복 코드 생성을 방지할 수 있습니다.
+> **IMPORTANT**: 이 문서에 기술된 gRPC 양방향 통신 및 C++ 데몬 재작성(Rework)은 **Phase 1에서 구현되었습니다** (C++ 경로: `OrchestratorService.NodeStream`). 남은 작업은 "미결 항목(Open Items)"(섹션 7)에서 관리됩니다.
 
 ---
 

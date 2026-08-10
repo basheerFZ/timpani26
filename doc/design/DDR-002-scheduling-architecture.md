@@ -112,7 +112,7 @@ TIMPANI-N Daemon (C++, userspace)
 │     Receives HierarchicalScheduleTable from TIMPANI-O
 │     Updates BPF maps:
 │       tt_table_map     — TT slot table
-│       budget_map       — CBS budget (Cs, Ts)
+│       cbs_map          — CBS budget/state (Cs, Ts)
 │       partition_map    — cgroup_id → L1–L4
 │       current_slot_map — active TT slot
 │

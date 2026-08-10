@@ -12,10 +12,9 @@ SPDX-License-Identifier: MIT
 
 ---
 
-## 0. Implementation Status (Note for AI)
+## 0. Implementation Status
 
-> **IMPORTANT**: The gRPC bidirectional communication and C++ daemon rework described in this document were **fully implemented in Phase 1**.
-> **AI INSTRUCTION**: If you are an AI assistant, treat these components as existing infrastructure. Unless the User explicitly asks you to work on the "Open Items" (Section 7), **stop reading here and ignore the rest of this document** to save context and avoid generating redundant code.
+> **IMPORTANT**: The gRPC bidirectional communication and C++ daemon rework described in this document were **implemented in Phase 1** (C++ path: `OrchestratorService.NodeStream`). Remaining work is tracked under "Open Items" (Section 7).
 
 ---
 
