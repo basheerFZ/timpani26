@@ -135,8 +135,8 @@ git commit -m "chore(release): bump version to 2026.04.1
 - Update VERSION: 2026.04.0 → 2026.04.1
 - Update CHANGELOG: Add [2026.04.1] section"
 
-# 태그
-git tag v2026.04.1
+# 태그 (annotated — 태거/날짜/메시지 메타데이터 포함)
+git tag -a v2026.04.1 -m "TIMPANI 2026.04.1"
 
 # 태그 푸시 (선택)
 git push origin v2026.04.1
@@ -214,14 +214,33 @@ v{VERSION}
 
 예: `v2026.04.0`, `v2026.04.1`
 
+### Annotated 태그 사용
+
+릴리스 태그는 **annotated 태그**(`git tag -a`)로 생성합니다.
+
+- **이유**: 태거(who), 날짜(when), 메시지(why)가 태그 객체에 함께 저장되어
+  릴리스 추적성이 높고, `git describe`와 GitHub Release 노트 연동에 유리합니다.
+- lightweight 태그(`git tag <name>`)는 커밋을 가리키는 단순 포인터라 메타데이터가 없습니다.
+- **종류 확인**: `git cat-file -t v2026.08.0` → annotated는 `tag`, lightweight는 `commit`.
+
+> 참고: `v2026.08.0` 이전 태그(`v2026.04.*`, `v2026.07.0`)는 lightweight로 생성되어
+> 이미 원격에 공개되어 있습니다. 공개된 태그의 소급 변환(force-push)은 지양하며,
+> `v2026.08.0`부터 annotated 관례를 적용합니다.
+
 ### 태그 관리
 
 ```bash
-# 태그 목록 확인
-git tag -l "v2026*"
+# 태그 목록 확인 (메시지 포함)
+git tag -n99 -l "v2026*"
 
-# 특정 커밋에 태그 추가 (나중에)
-git tag v2026.04.0 d5752d4
+# annotated 태그 생성 (현재 커밋)
+git tag -a v2026.04.0 -m "TIMPANI 2026.04.0"
+
+# 특정 커밋에 annotated 태그 추가 (나중에)
+git tag -a v2026.04.0 -m "TIMPANI 2026.04.0" d5752d4
+
+# 태그 정보 확인
+git show v2026.04.0
 
 # 태그 삭제 (실수 시)
 git tag -d v2026.04.0
@@ -255,7 +274,7 @@ git push origin --delete v2026.04.0
 **A**: VERSION 파일을 업데이트하는 커밋에 태그를 붙입니다.
 ```bash
 git commit -m "chore(release): bump version to 2026.04.1"
-git tag v2026.04.1  # 방금 커밋에 태그
+git tag -a v2026.04.1 -m "TIMPANI 2026.04.1"  # 방금 커밋에 annotated 태그
 ```
 
 ---
