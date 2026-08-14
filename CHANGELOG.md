@@ -7,6 +7,40 @@ and this project adheres to [Calendar Versioning](https://calver.org/) (YYYY.MM.
 
 ## [Unreleased]
 
+## [2026.08.0] - 2026-08-14
+
+Release introducing per-CPU timer threads and a schedule generation counter, with SHM slot-assignment stability fixes and the full design document set (DDR/SRS).
+
+> **⚠️ Breaking Change**: The `timpani_ttsched_shm` struct layout changed — the
+> `tasks[]` array offset moved from byte 8 to byte 16 (generation counter added
+> to the SHM header). timpani-n and sample-apps built from this release must be
+> deployed together. (8369e01)
+
+### timpani-n
+
+#### Added
+- **Per-CPU timer threads**: Replaced the single timer-loop thread with per-CPU independent timer loops, protected by a recursive lifecycle mutex, plus diagnostic logs for startup and schedule updates. (46a301d)
+- **Schedule generation counter**: Added a generation counter to the SHM header and increment it in TimerMaster when publishing schedule tables, forcing clients to re-lookup task slots on change. (8369e01)
+
+#### Fixed
+- **Stable SHM slot assignments**: Preserve existing SHM slot indices for active tasks across schedule-table updates and assign the lowest free slot only to newly added tasks, preventing task-wakeup distortion from slot shifting. (42f12f5)
+
+#### Changed
+- Documented TimerMaster concurrency invariants: serialized table-update path, lock ordering, per-CPU thread partitioning, and wake-path safety. (b07d3ca)
+
+### sample-apps
+
+#### Changed
+- **libttsched** (BREAKING): Track the SHM header generation counter and re-lookup task slots when it changes. (8369e01)
+
+#### Fixed
+- **libttsched TLS**: Made `g_shm`, `g_task_idx`, and `g_shm_generation` thread-local (`__thread`) so concurrent threads no longer overwrite each other's SHM mapping / slot index — fixes futex waits on the wrong slot and missed schedule updates. (bf8ba5c)
+
+### Documentation
+
+#### Added
+- **Design document set**: Imported the DDR-001~012 and SRS-000 design specifications (with Korean editions under `doc/design/kor/`), aligned against the shipped timpani26 source — workload model, scheduling architecture, interface protocol, resource allocation, sched_ext BPF scheduler, communication architecture, TT+CBS integrated scheduling, runtime table update, and fault management.
+
 ## [2026.07.0] - 2026-07-10
 
 Major feature release introducing CBS scheduling Phase 2, Fault Monitor integration, and various stability fixes.
