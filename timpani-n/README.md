@@ -116,7 +116,7 @@ sudo dnf install -y grpc-devel protobuf-devel
 ### Native Build
 
 ```bash
-git clone --recurse-submodules https://github.com/MCO-PICCOLO/TIMPANI.git
+git clone --recurse-submodules https://github.com/eclipse-timpani/timpani26
 cd TIMPANI/timpani-n
 mkdir build && cd build
 

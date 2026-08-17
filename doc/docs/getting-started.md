@@ -38,7 +38,7 @@ See the detailed instructions in:
 ## 2. Cloning the Repository
 
 ```bash
-git clone --recurse-submodules https://github.com/MCO-PICCOLO/TIMPANI.git
+git clone --recurse-submodules https://github.com/eclipse-timpani/timpani26
 cd TIMPANI
 ```
 

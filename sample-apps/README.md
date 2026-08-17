@@ -77,7 +77,7 @@ sudo dnf install -y gcc gcc-c++ cmake make
 ### Native Build
 
 ```bash
-git clone https://github.com/MCO-PICCOLO/TIMPANI.git
+git clone https://github.com/eclipse-timpani/timpani26
 cd TIMPANI/sample-apps
 mkdir build && cd build
 cmake ..

@@ -102,7 +102,7 @@ sudo dnf install -y grpc-devel
 ### Native Build
 
 ```bash
-git clone https://github.com/MCO-PICCOLO/TIMPANI.git
+git clone https://github.com/eclipse-timpani/timpani26
 cd TIMPANI/timpani-o
 mkdir build && cd build
 cmake ..
