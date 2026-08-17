@@ -1,0 +1,41 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+#
+# Post-installation script for timpani-n package
+
+set -e
+
+# Create timpani config directory if not exists
+mkdir -p /etc/timpani
+
+# Create default config if not exists
+if [ ! -f /etc/timpani/timpani-n.conf ]; then
+    cat > /etc/timpani/timpani-n.conf << 'EOF'
+# TIMPANI-N Configuration
+# See timpani-n --help for more options
+
+ORCHESTRATOR_HOST=127.0.0.1
+ORCHESTRATOR_PORT=50060
+NODE_ID=
+EOF
+    echo "Created default configuration: /etc/timpani/timpani-n.conf"
+fi
+
+# Reload systemd daemon
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    echo "Systemd daemon reloaded"
+    
+    # Enable service (but don't start automatically)
+    systemctl enable timpani-n.service || true
+    echo "timpani-n service enabled"
+    echo ""
+    echo "To start timpani-n:"
+    echo "  sudo systemctl start timpani-n"
+    echo ""
+    echo "To check status:"
+    echo "  sudo systemctl status timpani-n"
+fi
+
+exit 0

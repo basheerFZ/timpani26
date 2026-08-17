@@ -1,2 +1,100 @@
-# timpani26
-Eclipse timpani provides Distributed real-time scheduling system with time-triggered execution capabilities  with AI Workload.
+<!--
+* SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+* SPDX-License-Identifier: MIT
+-->
+
+# TIMPANI
+
+**TIMPANI** is a distributed real-time scheduling system with time-triggered execution capabilities for Software Defined Vehicles (SDV).
+
+| | |
+|---|---|
+| **Version** | 2026.08.0 ([CalVer](https://calver.org/)) |
+| **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+| **License** | MIT |
+
+This repository contains both original C implementations and modern Rust ports with enhanced type safety and memory safety.
+
+## Architecture
+
+- **TIMPANI-N (Node Executor)**: Executes time-triggered tasks on individual nodes
+- **TIMPANI-O (Node Scheduler)**: Orchestrates and schedules tasks across distributed nodes
+- **Sample Applications**: Real-time test applications for system validation
+
+## Getting Started
+
+### Clone the Repository
+
+```bash
+git clone --recurse-submodules https://github.com/eclipse-timpani/timpani26
+cd TIMPANI
+```
+
+> **Note:** Use `--recurse-submodules` to automatically clone the required submodules (libbpf, etc.).
+
+All binaries embed version, Git commit hash, and build timestamp at compile time (`-V` / `--version`). See [Version Management](doc/VERSIONING.md) for the versioning policy and release process.
+
+Refer to the individual component READMEs below for build and setup instructions.
+
+## Components
+
+### [Sample Applications](sample-apps/README.md)
+Real-time sample applications for real-time system analysis. Provides periodic execution, deadline monitoring, and runtime statistics collection capabilities.
+
+**Quick Build:**
+```bash
+cd sample-apps
+mkdir build && cd build
+cmake ..
+make
+```
+*For detailed setup and usage → [Full Documentation](sample-apps/README.md)*
+
+### [TIMPANI-N (Node Executor)](timpani-n/README.md)
+C implementation of the time-triggered node executor component.
+
+**Quick Build:**
+```bash
+cd timpani-n
+mkdir build && cd build
+cmake ..
+make
+```
+
+- [CentOS Setup](timpani-n/README.CentOS.md)
+- [Ubuntu 20 Setup](timpani-n/README.Ubuntu20.md)
+
+*For detailed setup, dependencies, and usage → [Full Documentation](timpani-n/README.md)*
+
+### [TIMPANI-O (Node Scheduler)](timpani-o/README.md)
+C implementation of the orchestrator component with gRPC & protobuf support for distributed scheduling.
+
+**Quick Build:**
+```bash
+cd timpani-o
+mkdir build && cd build
+cmake ..
+make
+```
+*For detailed setup, protobuf configuration, and usage → [Full Documentation](timpani-o/README.md)*
+
+### [TIMPANI Rust Components](timpani_rust/README.md)
+Rust ports of TIMPANI components with enhanced type safety and memory safety.
+
+#### [Rust TIMPANI-N (Node Executor)](timpani_rust/timpani-n/README.md)
+Rust implementation of the node executor with comprehensive CLI interface, configuration validation, and structured logging. **Status**: Configuration parsing complete, runtime features in development.
+
+*For setup, usage examples, and current status → [Full Documentation](timpani_rust/timpani-n/README.md)*
+
+#### [Rust TIMPANI-O (Node Scheduler)](timpani_rust/timpani-o/)
+Rust implementation of the global scheduler component. **Status**: In development.
+
+*For setup and current development status → [Full Documentation](timpani_rust/timpani-o/README.md)*
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+**Navigation:** [Sample Apps](sample-apps/) | [TIMPANI-N (C)](timpani-n/) | [TIMPANI-O (C)](timpani-o/) | [Rust Components](timpani_rust/) | [Rust TIMPANI-N](timpani_rust/timpani-n/)

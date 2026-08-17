@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+
+version: '3.8'
+
+services:
+  timpani-o:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sdv.lge.com/timpani/timpani-o:latest
+    container_name: timpani-o
+    ports:
+      - "50052:50052"  # gRPC SchedInfoServer (Pullpiri -> timpani-o)
+      - "50060:50060"  # gRPC OrchestratorServer (timpani-n <-> timpani-o)
+    environment:
+      - FAULT_HOST=${FAULT_HOST:-localhost}
+      - FAULT_PORT=${FAULT_PORT:-50053}
+    volumes:
+      - ./examples/node_configurations.yaml:/config/node_configurations.yaml:ro
+    command: ["-c", "/config/node_configurations.yaml"]
+    restart: unless-stopped
