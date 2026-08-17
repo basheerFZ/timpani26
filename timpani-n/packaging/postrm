@@ -1,0 +1,18 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+#
+# Post-removal script for timpani-n package
+
+set -e
+
+# Reload systemd daemon after removing service file
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+fi
+
+# Note: We intentionally do NOT remove /etc/timpani/timpani-n.conf
+# to preserve user configuration for potential reinstall.
+# Use 'purge' (apt purge) or manual removal if needed.
+
+exit 0

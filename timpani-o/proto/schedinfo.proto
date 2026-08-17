@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package schedinfo.v1;
+
+// SchedInfoService in Timpani-O
+service SchedInfoService {
+  // Add a new SchedInfo
+  // From Pullpiri to Timpani-O
+  rpc AddSchedInfo (SchedInfo) returns (Response) {}
+}
+
+// RecoveryService in Timpani-O
+service RecoveryService {
+  // Enforce a recovery policy
+  // From Pullpiri to Timpani-O
+  rpc EnforceRecoveryPolicy (RecoveryCommand) returns (Response) {}
+}
+
+// FaultService in Pullpiri
+service FaultService {
+  // Notify a fault
+  // From Timpani-O to Pullpiri
+  rpc NotifyFault (FaultInfo) returns (Response) {}
+}
+
+// Common response message for SchedInfoService and FaultService
+message Response {
+  // Status code: 0 for success, non-zero for error
+  int32 status = 1;
+}
+
+enum SchedPolicy {
+  // SCHED_NORMAL
+  NORMAL = 0;
+  // SCHED_FIFO
+  FIFO = 1;
+  // SCHED_RR
+  RR = 2;
+}
+
+// Temporal class for workload classification (DDR-001/DDR-007)
+// Determines the scheduling mechanism:
+//   TEMPORAL_PERIODIC → L1 → Time-Triggered (TT)
+//   TEMPORAL_SPORADIC → L2 → Constant Bandwidth Server (CBS)
+enum TemporalClass {
+  TEMPORAL_PERIODIC = 0;
+  TEMPORAL_SPORADIC = 1;
+}
+
+message TaskInfo {
+  // Unique task name
+  string name = 1;
+  // Task priority
+  int32 priority = 2;
+  // Scheduling policy
+  SchedPolicy policy = 3;
+  // CPU affinity
+  uint64 cpu_affinity = 4;
+  // Period in us
+  int32 period = 5;
+  // Release time in us
+  int32 release_time = 6;
+  // Runtime in us
+  int32 runtime = 7;
+  // Deadline in us
+  int32 deadline = 8;
+  // Node ID where the task is running
+  string node_id = 9;
+  // Maximum number of deadline misses allowed
+  int32 max_dmiss = 10;
+}
+
+enum RecoveryPolicy {
+  RECOVERY_UNKNOWN = 0;
+  RECOVERY_STOP = 1;
+  RECOVERY_RESTART = 2;
+  RECOVERY_TERMINATE = 3;
+}
+
+message RecoveryCommand {
+  string workload_id = 1;
+  RecoveryPolicy recovery_policy = 2;
+}
+
+message SchedInfo {
+  string workload_id = 1;
+  repeated TaskInfo tasks = 2;
+  // Workload temporal class — classifies the entire workload (DDR-007 §3.2)
+  // All tasks in a SchedInfo share the same scheduling level.
+  // Default (0 = TEMPORAL_PERIODIC) → L1 TT for backward compatibility.
+  TemporalClass temporal_class = 3;
+}
+
+enum FaultType {
+  // Unknown fault
+  UNKNOWN = 0;
+  // Deadline miss
+  DMISS = 1;
+}
+
+message FaultInfo {
+  string workload_id = 1;
+  string node_id = 2;
+  string task_name = 3;
+  FaultType type = 4;
+  // DEBUG/VERIFICATION ONLY (0612 meeting agreement).
+  // This field carries the cumulative deadline miss count for the task.
+  // It is intended solely for verifying that max_dmiss values propagate
+  // correctly through the pipeline (Pullpiri → O → N → O → Pullpiri).
+  // Do NOT use this field for policy decision-making.
+  uint32 cumulative_dmiss = 5;
+}

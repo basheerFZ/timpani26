@@ -1,0 +1,18 @@
+{
+  "workload_id": "cbs_workload",
+  "tasks": [
+    {
+      "name": "lidar",
+      "priority": 0,
+      "policy": "FIFO",
+      "cpu_affinity": 0,
+      "period": 300000,
+      "release_time": 0,
+      "runtime": 20000,
+      "deadline": 30000,
+      "node_id": "node01",
+      "max_dmiss": 3
+    }
+  ],
+  "temporal_class": 1
+}

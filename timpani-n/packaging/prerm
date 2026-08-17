@@ -1,0 +1,23 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright 2026 LG Electronics Inc.
+# SPDX-License-Identifier: MIT
+#
+# Pre-removal script for timpani-n package
+
+set -e
+
+# Stop service if running
+if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet timpani-n.service 2>/dev/null; then
+        echo "Stopping timpani-n service..."
+        systemctl stop timpani-n.service || true
+    fi
+    
+    # Disable service
+    if systemctl is-enabled --quiet timpani-n.service 2>/dev/null; then
+        echo "Disabling timpani-n service..."
+        systemctl disable timpani-n.service || true
+    fi
+fi
+
+exit 0
