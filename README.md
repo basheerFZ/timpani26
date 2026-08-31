@@ -3,6 +3,13 @@
 * SPDX-License-Identifier: MIT
 -->
 
+<div align="center">
+    <img alt="Shows Timpani logo" src="doc/assets/logo/T_logo 400x400_1.png"
+        width="50%"
+    />
+</div>
+<br>
+
 # TIMPANI
 
 **TIMPANI** is a distributed real-time scheduling system with time-triggered execution capabilities for Software Defined Vehicles (SDV).
